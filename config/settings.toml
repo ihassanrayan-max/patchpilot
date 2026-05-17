@@ -1,0 +1,52 @@
+# PatchPilot configuration.
+#
+# Phase 0 defines the keys downstream phases will read. Concrete values that
+# require ingestion / training (e.g. feature lists, hyperparameters) are
+# placeholders and tightened in Phase 1/2.
+
+[paths]
+data_dir   = "data"
+bronze_dir = "data/bronze"
+silver_dir = "data/silver"
+gold_dir   = "data/gold"
+mlruns_dir = ".mlruns"
+reports_dir = "docs/benchmarks"
+
+[ingest]
+nvd_since   = "2016-01-01"          # earliest publishedDate to fetch
+epss_history_days = 365             # rolling EPSS snapshots to retain
+
+[label]
+# exploited_30d := (cve in CISA KEV) AND (KEV.date_added <= published + 30d)
+horizon_days = 30
+right_censor_days = 30              # exclude CVEs published within last N days
+
+[features]
+# Phase 2 will tighten this to a frozen list.
+include_tabular = true
+include_temporal = true
+include_graph    = false
+
+[train]
+n_splits      = 5
+embargo_days  = 30
+seed          = 42
+mlflow_experiment = "patchpilot"
+# LightGBM hyperparameters (Phase 2 may tune via Optuna).
+[train.lgbm]
+objective         = "binary"
+learning_rate     = 0.05
+num_leaves        = 63
+min_data_in_leaf  = 200
+feature_fraction  = 0.9
+bagging_fraction  = 0.8
+bagging_freq      = 5
+n_estimators      = 2000
+early_stopping_rounds = 100
+
+[serve]
+host = "0.0.0.0"
+port = 8000
+
+[eval]
+top_k = 100

@@ -1,0 +1,50 @@
+services:
+  api:
+    build:
+      context: .
+      dockerfile: infra/docker/Dockerfile.api
+    image: patchpilot/api:dev
+    container_name: patchpilot-api
+    ports:
+      - "8000:8000"
+    environment:
+      MLFLOW_TRACKING_URI: file:///app/.mlruns
+      PATCHPILOT_DATA_DIR: /app/data
+    volumes:
+      - ./data:/app/data
+      - ./.mlruns:/app/.mlruns
+    restart: unless-stopped
+
+  trainer:
+    build:
+      context: .
+      dockerfile: infra/docker/Dockerfile.trainer
+    image: patchpilot/trainer:dev
+    container_name: patchpilot-trainer
+    # One-shot: runs `patchpilot train` and exits. Use
+    #   docker compose run --rm trainer
+    # to invoke manually; do not include in `docker compose up` long-running set.
+    restart: "no"
+    environment:
+      MLFLOW_TRACKING_URI: file:///app/.mlruns
+      PATCHPILOT_DATA_DIR: /app/data
+    volumes:
+      - ./data:/app/data
+      - ./.mlruns:/app/.mlruns
+
+  demo:
+    build:
+      context: .
+      dockerfile: infra/docker/Dockerfile.demo
+    image: patchpilot/demo:dev
+    container_name: patchpilot-demo
+    ports:
+      - "8501:8501"
+    environment:
+      PATCHPILOT_API_URL: http://api:8000
+    volumes:
+      - ./data:/app/data
+      - ./.mlruns:/app/.mlruns
+    depends_on:
+      - api
+    restart: unless-stopped

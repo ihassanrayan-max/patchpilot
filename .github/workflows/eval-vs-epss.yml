@@ -1,0 +1,43 @@
+name: eval-vs-epss
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: "0 7 * * 1"   # Mondays 07:00 UTC
+
+jobs:
+  benchmark:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v3
+        with:
+          version: "0.5.11"
+
+      - name: Install Python 3.11
+        run: uv python install 3.11
+
+      - name: Sync deps
+        run: uv sync
+
+      - name: Ingest
+        run: uv run patchpilot ingest --source all
+
+      - name: Train
+        run: uv run patchpilot train --config config/settings.toml
+
+      - name: Eval + write report
+        run: uv run patchpilot eval --report docs/benchmarks/REPORT.md
+
+      - name: Commit updated benchmark
+        if: github.event_name == 'schedule'
+        run: |
+          git config user.name "patchpilot-bot"
+          git config user.email "bot@patchpilot.dev"
+          git add docs/benchmarks/REPORT.md
+          if ! git diff --cached --quiet; then
+            git commit -m "chore(bench): refresh PatchPilot vs EPSS report"
+            git push
+          fi
