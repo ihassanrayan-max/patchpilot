@@ -34,8 +34,8 @@ flowchart LR
 
 | Model       | AUC-PR | AUC-ROC | P@100 | Brier | ECE |
 | ----------- | ------ | ------- | ----- | ----- | --- |
-| PatchPilot  |   —    |    —    |   —   |   —   |  —  |
-| EPSS        |   —    |    —    |   —   |   —   |  —  |
+| PatchPilot  | 0.146 | 0.753 | 0.030 | 0.002 | 0.001 |
+| EPSS        | 0.437 | 0.965 | 0.030 | 0.014 | 0.024 |
 
 Numbers are populated by Phase 3 (`make eval`) and refreshed weekly by
 [`.github/workflows/eval-vs-epss.yml`](.github/workflows/eval-vs-epss.yml).
@@ -44,9 +44,24 @@ Numbers are populated by Phase 3 (`make eval`) and refreshed weekly by
 
 ```
 make up        # build + start api (:8000) and demo (:8501)
-make ingest    # Phase 1: bronze/silver lakes
-make train     # Phase 2: LightGBM + MLflow run under .mlruns/
-make eval      # Phase 3: writes docs/benchmarks/REPORT.md
+make ingest    # Phase 1: bronze + silver lakes (small live subset by default)
+make train     # Phase 2: LightGBM artifact + metadata under .mlruns/<run_id>/
+make eval      # Phase 3: writes docs/benchmarks/REPORT.md (real numeric metrics)
+make serve     # Phase 4: FastAPI service on :8000
+make demo      # Streamlit on :8501 (talks to the API at PATCHPILOT_API)
+```
+
+The first `make ingest` issues live calls to NVD, EPSS, and CISA KEV. To keep
+a fresh clone tractable on the un-keyed NVD rate limit, the CLI caps the NVD
+pull at `--nvd-max-records 2000` by default. For a more useful model, pull
+a longer window with a deeper cap, optionally pointing `--cache-dir` at a
+folder so the raw payloads are reproducible offline:
+
+```
+uv run patchpilot ingest --source nvd --since 2023-01-01 \
+    --nvd-max-records 8000 --cache-dir data/cache
+uv run patchpilot ingest --source kev
+uv run patchpilot ingest --source epss
 ```
 
 Local development (no Docker):
@@ -56,6 +71,19 @@ pip install uv && uv python install 3.11
 uv sync
 uv run pytest -q
 uv run patchpilot serve --port 8000
+```
+
+### Try the API
+
+```
+curl http://localhost:8000/healthz
+curl http://localhost:8000/model/info
+curl -X POST http://localhost:8000/score \
+     -H 'content-type: application/json' \
+     -d '{"cve_ids":["CVE-2022-42475","CVE-2023-21674"]}'
+curl -X POST http://localhost:8000/rank \
+     -H 'content-type: application/json' \
+     -d @sample_sbom.json
 ```
 
 ## Repository layout
@@ -72,12 +100,34 @@ infra/docker/Dockerfile.{api,trainer,demo}
 tests/{test_imports,test_label_construction,test_temporal_cv,test_sbom_parser}.py
 ```
 
+## Status
+
+| Phase | What lands                                | State |
+| ----- | ----------------------------------------- | ----- |
+| 0     | Scaffold + CI + dockerfiles               | green |
+| 1     | NVD / EPSS / KEV ingest -> silver + label | green |
+| 2     | Features + temporal CV + LightGBM        | green |
+| 3     | Metrics + EPSS comparison report          | green |
+| 4     | FastAPI `/healthz` `/model/info` `/score` `/rank` + Streamlit demo | green |
+| 5     | End-to-end + CI green on main             | pending |
+| 6     | Conformal, SHAP, Evidently, etc.          | backlog |
+
+Phase 1-4 are real, end-to-end runnable, and produce the artifacts under
+`data/`, `.mlruns/`, and `docs/benchmarks/REPORT.md`. The benchmark table
+above is auto-rewritten by `make eval`.
+
+This sprint deliberately uses a **local file model registry** under
+`.mlruns/<run_id>/` (model artifact + JSON metadata + `latest.json`
+pointer) instead of an MLflow tracking backend; the read/write surface
+is small enough to wrap in `mlflow.start_run` later without changing
+call sites. See `src/patchpilot/train/train.py`.
+
 ## Roadmap
 
 The full five-phase build plan, schema contract, API contract, and CLI
 contract live in [`PLAN.md`](PLAN.md). The Phase 6 stretch list
 (conformal prediction, SHAP, Evidently, ExploitDB, GHSA, DistilBERT,
-daily retrain) is gated behind Phases 1–5 being green — see
+daily retrain) is gated behind Phases 1-5 being green - see
 [Phase 6 in PLAN.md](PLAN.md#2-stretch-list-phase-6--only-after-15-green).
 
 ## License

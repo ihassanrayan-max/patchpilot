@@ -5,4 +5,4 @@ Implemented in: Phase 1.
 
 from __future__ import annotations
 
-__all__: list[str] = ["nvd", "epss", "kev"]
+__all__: list[str] = ["nvd", "epss", "kev", "silver"]

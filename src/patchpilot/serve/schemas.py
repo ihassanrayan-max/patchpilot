@@ -89,3 +89,21 @@ class HealthResponse(BaseModel):
 
     status: str
     model_version: str | None = None
+
+
+class ModelInfoResponse(BaseModel):
+    """GET /model/info response body."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    model_version: str | None = None
+    run_id: str | None = None
+    trained_at: str | None = None
+    n_features: int | None = None
+    n_rows: int | None = None
+    n_pos: int | None = None
+    feature_names: list[str] | None = None
+    avg_metrics: dict[str, float] | None = None
+    final_valid_metrics: dict[str, float] | None = None
+    silver_path: str | None = None
+    artifact: str | None = None

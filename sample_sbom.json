@@ -1,0 +1,48 @@
+{
+  "bomFormat": "CycloneDX",
+  "specVersion": "1.5",
+  "version": 1,
+  "metadata": {
+    "timestamp": "2026-05-16T00:00:00Z",
+    "tools": [{ "name": "patchpilot", "version": "0.1.0" }]
+  },
+  "components": [
+    {
+      "type": "library",
+      "bom-ref": "pkg:generic/fortinet-fortios@7.2.0",
+      "name": "fortinet-fortios",
+      "version": "7.2.0",
+      "purl": "pkg:generic/fortinet-fortios@7.2.0"
+    },
+    {
+      "type": "library",
+      "bom-ref": "pkg:generic/centos-controlweb@1.0",
+      "name": "centos-web-panel",
+      "version": "0.9.8.851",
+      "purl": "pkg:generic/centos-web-panel@0.9.8.851"
+    },
+    {
+      "type": "library",
+      "bom-ref": "pkg:generic/windows@10.0",
+      "name": "windows",
+      "version": "10.0",
+      "purl": "pkg:generic/windows@10.0"
+    },
+    {
+      "type": "library",
+      "bom-ref": "pkg:pypi/openssl-bundled@3.0.0",
+      "name": "openssl",
+      "version": "3.0.0"
+    }
+  ],
+  "vulnerabilities": [
+    {
+      "id": "CVE-2023-21674",
+      "affects": [{ "ref": "pkg:generic/windows@10.0" }]
+    },
+    {
+      "id": "CVE-2022-42475",
+      "affects": [{ "ref": "pkg:generic/fortinet-fortios@7.2.0" }]
+    }
+  ]
+}

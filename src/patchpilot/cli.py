@@ -35,11 +35,52 @@ def ingest_cmd(
         Path,
         typer.Option(help="Bronze output directory."),
     ] = Path("data/bronze"),
+    nvd_max_records: Annotated[
+        int,
+        typer.Option(help="Maximum NVD records to pull (small subset by default)."),
+    ] = 2000,
+    cache_dir: Annotated[
+        Path | None,
+        typer.Option(help="Optional cache dir for raw API payloads (reproducible)."),
+    ] = None,
+    skip_silver: Annotated[
+        bool,
+        typer.Option(help="Only refresh bronze; skip the silver join."),
+    ] = False,
 ) -> None:
-    """Run bronze ingestion from NVD / EPSS / KEV. Phase 1 implementation."""
-    _ = source, since, out_dir, date
-    typer.echo("patchpilot ingest: Phase 1 not yet implemented", err=True)
-    raise typer.Exit(code=2)
+    """Run bronze ingestion from NVD / EPSS / KEV and rebuild the silver join."""
+    from datetime import datetime as _dt
+
+    from flows.daily_ingest import cli_entry
+
+    source = source.lower()
+    if source == "all":
+        sources: tuple[str, ...] = ("nvd", "epss", "kev")
+    elif source in {"nvd", "epss", "kev"}:
+        sources = (source,)
+    else:
+        typer.echo(f"unknown source '{source}', expected one of nvd|epss|kev|all", err=True)
+        raise typer.Exit(code=2)
+
+    parsed_since: date | None = None
+    if since is not None:
+        try:
+            parsed_since = _dt.strptime(since, "%Y-%m-%d").date()
+        except ValueError as exc:
+            typer.echo(f"--since must be YYYY-MM-DD ({exc})", err=True)
+            raise typer.Exit(code=2) from exc
+
+    data_dir = out_dir.parent if out_dir.name == "bronze" else Path("data")
+    results = cli_entry(
+        data_dir=data_dir,
+        sources=sources,
+        nvd_since=parsed_since,
+        nvd_max_records=nvd_max_records,
+        cache_dir=cache_dir,
+        skip_silver=skip_silver,
+    )
+    for name, value in results.items():
+        typer.echo(f"{name}: {value}")
 
 
 @app.command("train")
@@ -49,27 +90,29 @@ def train_cmd(
         typer.Option(help="Path to settings TOML."),
     ] = Path("config/settings.toml"),
 ) -> None:
-    """Train the LightGBM challenger and log to MLflow. Phase 2 implementation."""
-    _ = config
-    typer.echo("patchpilot train: Phase 2 not yet implemented", err=True)
-    raise typer.Exit(code=2)
+    """Train the LightGBM challenger; persist artifact + metadata under .mlruns/."""
+    from patchpilot.train.train import train_lgbm
+
+    run_id = train_lgbm(config)
+    typer.echo(f"trained run_id={run_id}")
 
 
 @app.command("eval")
 def eval_cmd(
     model_uri: Annotated[
         str,
-        typer.Option(help="MLflow model URI to evaluate, e.g. runs:/<id>/model."),
-    ] = "runs:/latest/model",
+        typer.Option(help="Model URI to evaluate. Defaults to latest local artifact."),
+    ] = "latest",
     report: Annotated[
         Path,
         typer.Option(help="Markdown report output path."),
     ] = Path("docs/benchmarks/REPORT.md"),
 ) -> None:
-    """Evaluate PatchPilot vs EPSS and write the benchmark report. Phase 3."""
-    _ = model_uri, report
-    typer.echo("patchpilot eval: Phase 3 not yet implemented", err=True)
-    raise typer.Exit(code=2)
+    """Evaluate PatchPilot vs EPSS and write the benchmark report."""
+    from patchpilot.eval.compare_epss import write_report
+
+    out = write_report(model_uri=model_uri, report_path=report)
+    typer.echo(f"wrote report to {out}")
 
 
 @app.command("serve")
