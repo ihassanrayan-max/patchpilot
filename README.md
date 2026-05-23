@@ -3,7 +3,8 @@
 PatchPilot is an open-source ML system that predicts which CVEs will be
 exploited within the next 30 days and ranks the vulnerabilities discovered
 in a CycloneDX SBOM by that probability. It is benchmarked head-to-head
-against the public EPSS baseline on the same held-out window with the same
+against the public EPSS baseline on the same calendar hold-out (`published_date >= 2025-01-01`,
+after right-censoring) with the same
 metrics, so users can see whether (and where) PatchPilot beats the freely
 available reference.
 
@@ -37,29 +38,32 @@ flowchart LR
 | PatchPilot  | 0.146 | 0.753 | 0.030 | 0.002 | 0.001 |
 | EPSS        | 0.437 | 0.965 | 0.030 | 0.014 | 0.024 |
 
-Numbers are populated by Phase 3 (`make eval`) and refreshed weekly by
-[`.github/workflows/eval-vs-epss.yml`](.github/workflows/eval-vs-epss.yml).
+Numbers are populated by Phase 3 (`make eval`) after ingest/train on your Silver snapshot.
+Placeholder `n/a` values mean this checkout has not run eval yet for the **2025+ calendar hold-out**.
+Weekly cron: [`.github/workflows/eval-vs-epss.yml`](.github/workflows/eval-vs-epss.yml).
 
 ## Quickstart
 
 ```
 make up        # build + start api (:8000) and demo (:8501)
-make ingest    # Phase 1: bronze + silver lakes (small live subset by default)
+make ingest    # Phase 1: bronze + silver (default NVD since from config/settings.toml)
 make train     # Phase 2: LightGBM artifact + metadata under .mlruns/<run_id>/
 make eval      # Phase 3: writes docs/benchmarks/REPORT.md (real numeric metrics)
 make serve     # Phase 4: FastAPI service on :8000
 make demo      # Streamlit on :8501 (talks to the API at PATCHPILOT_API)
 ```
 
-The first `make ingest` issues live calls to NVD, EPSS, and CISA KEV. To keep
-a fresh clone tractable on the un-keyed NVD rate limit, the CLI caps the NVD
-pull at `--nvd-max-records 2000` by default. For a more useful model, pull
-a longer window with a deeper cap, optionally pointing `--cache-dir` at a
-folder so the raw payloads are reproducible offline:
+The first `make ingest` issues live calls to NVD, EPSS, and CISA KEV. By default
+the CLI pulls up to **`--nvd-max-records 50000`** CVEs starting from **`[ingest].nvd_since`**
+in [`config/settings.toml`](config/settings.toml) (currently `2018-01-01`) unless you pass `--since`.
+
+Set **`NVD_API_KEY`** in the environment so PatchPilot uses **~0.6s** sleeps between NVD pages;
+without a key, pacing stays at **~6.5s** per page to respect the public rate limit.
+
+Use **`--cache-dir`** to persist raw API payloads for reproducible offline re-ingest:
 
 ```
-uv run patchpilot ingest --source nvd --since 2023-01-01 \
-    --nvd-max-records 8000 --cache-dir data/cache
+uv run patchpilot ingest --source nvd --cache-dir data/cache
 uv run patchpilot ingest --source kev
 uv run patchpilot ingest --source epss
 ```
@@ -97,7 +101,7 @@ docs/{architecture,data-sources,modeling,evaluation,runbook}.md
 docs/benchmarks/REPORT.md
 infra/docker/Dockerfile.{api,trainer,demo}
 .github/workflows/{ci,eval-vs-epss}.yml
-tests/{test_imports,test_label_construction,test_temporal_cv,test_sbom_parser}.py
+tests/{test_imports,test_label_construction,test_temporal_cv,test_sbom_parser,test_eval_metrics}.py
 ```
 
 ## Status

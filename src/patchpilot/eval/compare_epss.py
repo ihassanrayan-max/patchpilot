@@ -1,10 +1,11 @@
 """Side-by-side PatchPilot vs EPSS evaluation report writer.
 
 Loads the most recently trained model (under ``.mlruns/latest.json``),
-scores it and the EPSS baseline on the same held-out tail window, and
-writes a Markdown report with real numeric metrics. If any prerequisite
-is missing we still write a clearly worded report explaining exactly why
-no numbers could be computed (per the user's instruction not to fabricate).
+scores it and the EPSS baseline on the same calendar hold-out slice
+(``published_date >= 2025-01-01``, after right-censoring), and writes a
+Markdown report with real numeric metrics. If any prerequisite is missing we
+still write a clearly worded report explaining exactly why no numbers could be
+computed (per the user's instruction not to fabricate).
 """
 
 from __future__ import annotations
@@ -27,10 +28,10 @@ from patchpilot.eval.metrics import (
 from patchpilot.ingest.silver import LABEL_HORIZON_DAYS, right_censor_mask
 from patchpilot.models.baseline_epss import EpssBaseline
 from patchpilot.models.lgbm import LgbmModel
+from patchpilot.train.holdout import HELDOUT_PUBLISHED_FROM, compute_holdout_content_sha256
 from patchpilot.train.train import assemble_training_frame
 
 DEFAULT_TOP_K = 100
-HOLDOUT_FRACTION = 0.2
 
 
 def _load_latest_model_artifact(mlruns_dir: Path) -> tuple[LgbmModel, dict[str, Any]] | None:
@@ -46,14 +47,6 @@ def _load_latest_model_artifact(mlruns_dir: Path) -> tuple[LgbmModel, dict[str, 
     meta_path = artifact.parent / "metadata.json"
     meta = cast(dict[str, Any], json.loads(meta_path.read_text())) if meta_path.exists() else {}
     return model, meta
-
-
-def _holdout_split(frame: pl.DataFrame, fraction: float = HOLDOUT_FRACTION) -> pl.DataFrame:
-    """Take the most-recent ``fraction`` of rows by ``published_date`` as holdout."""
-    sorted_frame = frame.sort("published_date")
-    n = len(sorted_frame)
-    cutoff = max(1, int(n * (1.0 - fraction)))
-    return sorted_frame.slice(cutoff, n - cutoff)
 
 
 def _write_empty_report(report_path: Path, reason: str) -> Path:
@@ -80,6 +73,7 @@ def _render_markdown(
     pos_rate: float,
     top_k: int,
     model_meta: dict[str, Any],
+    extra_notes: str | None = None,
 ) -> str:
     """Render the benchmark Markdown body."""
 
@@ -112,14 +106,19 @@ def _render_markdown(
         "## Notes\n\n"
         "PatchPilot scores come from the latest LightGBM run; EPSS scores come from "
         "the EPSS column of the silver `cve_master.parquet`. Both models are scored "
-        "on the same right-censored tail window. The label is `exploited_30d` "
-        "per the contract in `PLAN.md`.\n\n"
-        "If `n CVEs` above is in the low thousands and the positive rate is below "
-        "1%, the metrics here will be noisy and the LightGBM challenger usually "
-        "underperforms EPSS because EPSS already encodes much of the signal "
-        "PatchPilot has to re-learn from a sparse positive set. Re-run "
-        "`patchpilot ingest --source nvd --since <earlier-date> --nvd-max-records "
-        "20000` to widen the training/eval window before drawing conclusions.\n"
+        "on the same **calendar hold-out slice**: CVEs with `published_date >= "
+        "2025-01-01`, after applying the usual 30-day right-censoring rule so labels "
+        "are observable. The label is `exploited_30d` per `PLAN.md`. Training excludes "
+        "this slice; see `heldout_content_sha256` "
+        "in `.mlruns/<run_id>/metadata.json`.\n\n"
+        "Set `NVD_API_KEY` for faster NVD paging (0.6s between requests vs ~6.5s "
+        "without a key). The CLI defaults to `--nvd-max-records 50000` and "
+        "`[ingest].nvd_since` from `config/settings.toml` when `--since` is omitted.\n\n"
+        "If `n CVEs` above is small or the positive rate is below "
+        "1%, metrics will be noisy. Prefer a wider bronze window "
+        "(earlier `[ingest].nvd_since` or higher `--nvd-max-records`) before drawing "
+        "firm conclusions vs EPSS.\n"
+        + (f"\n**Evaluation integrity:** {extra_notes}\n" if extra_notes else "")
     )
 
 
@@ -174,7 +173,7 @@ def write_report(
     top_k: int = DEFAULT_TOP_K,
     readme_path: Path = Path("README.md"),
 ) -> Path:
-    """Score PatchPilot + EPSS on the held-out tail window and write Markdown."""
+    """Score PatchPilot + EPSS on the calendar hold-out window and write Markdown."""
     _ = model_uri
     silver_path = Path(silver_path)
     mlruns_dir = Path(mlruns_dir)
@@ -202,7 +201,25 @@ def write_report(
             f"Most recent eligible publication: <= {cutoff}.",
         )
 
-    holdout = _holdout_split(closed, HOLDOUT_FRACTION)
+    holdout = closed.filter(pl.col("published_date") >= pl.lit(HELDOUT_PUBLISHED_FROM))
+    if len(holdout) < 1:
+        return _write_empty_report(
+            report_path,
+            "calendar hold-out window (published_date >= 2025-01-01) has no rows after "
+            "right-censoring; ingest fresher data or wait until more CVEs leave the window.",
+        )
+
+    extra_notes: str | None = None
+    expected_hash = model_meta.get("heldout_content_sha256")
+    if isinstance(expected_hash, str) and expected_hash:
+        actual_hash = compute_holdout_content_sha256(holdout)
+        if actual_hash != expected_hash:
+            extra_notes = (
+                f"holdout SHA-256 mismatch — metadata `{expected_hash[:12]}…` vs "
+                f"current slice `{actual_hash[:12]}…`. Refresh silver and re-run "
+                "`make train` before trusting this benchmark."
+            )
+
     if holdout.get_column("exploited_30d").sum() < 1:
         return _write_empty_report(
             report_path,
@@ -242,6 +259,7 @@ def write_report(
         pos_rate=pos_rate,
         top_k=top_k,
         model_meta=model_meta,
+        extra_notes=extra_notes,
     )
 
     report_path.parent.mkdir(parents=True, exist_ok=True)

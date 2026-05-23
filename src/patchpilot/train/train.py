@@ -26,11 +26,14 @@ from patchpilot.features.graph import build_graph_frame
 from patchpilot.features.tabular import build_tabular_frame
 from patchpilot.features.temporal import build_temporal_frame_default
 from patchpilot.ingest.silver import LABEL_HORIZON_DAYS, right_censor_mask
-from patchpilot.models.lgbm import LgbmModel
+from patchpilot.models.lgbm import DEFAULT_PARAMS, LgbmModel
 from patchpilot.train.calibration import fit_calibrator
+from patchpilot.train.holdout import HELDOUT_PUBLISHED_FROM, compute_holdout_content_sha256
 from patchpilot.train.temporal_cv import temporal_splits
 
 MODEL_VERSION = "lgbm@v0.1.0"
+
+_NON_BOOSTER_KEYS = frozenset({"early_stopping_rounds"})
 
 
 def _load_config(config_path: Path) -> dict[str, Any]:
@@ -91,6 +94,38 @@ def _row_metrics(y_true: np.ndarray, y_score: np.ndarray) -> dict[str, float]:
     }
 
 
+def _sequential_tune_fold(
+    *,
+    base_params: dict[str, Any],
+    seed: int,
+    x_train: np.ndarray,
+    y_train: np.ndarray,
+    x_valid: np.ndarray,
+    y_valid: np.ndarray,
+    feature_names: list[str],
+) -> dict[str, Any]:
+    """Pick ``max_depth``, ``num_leaves``, ``min_data_in_leaf`` by sequential grid search."""
+
+    def valid_pr(params: dict[str, Any]) -> float:
+        model = LgbmModel(params=params, seed=seed)
+        model.fit(x_train, y_train, x_valid, y_valid, feature_names=feature_names)
+        scores = model.predict_proba(x_valid)
+        value = float(aucpr(y_valid, scores))
+        return value if value == value else -1.0
+
+    tuned = dict(base_params)
+    best_depth = max([6, 8, 12], key=lambda d: valid_pr({**tuned, "max_depth": d}))
+    tuned["max_depth"] = best_depth
+
+    best_leaves = max([31, 63, 127], key=lambda n: valid_pr({**tuned, "num_leaves": n}))
+    tuned["num_leaves"] = best_leaves
+
+    best_min_data = max([20, 50, 150], key=lambda m: valid_pr({**tuned, "min_data_in_leaf": m}))
+    tuned["min_data_in_leaf"] = best_min_data
+
+    return tuned
+
+
 def train_lgbm(config_path: Path) -> str:
     """Run a deterministic training pipeline; return the run id."""
     config = _load_config(config_path)
@@ -105,25 +140,40 @@ def train_lgbm(config_path: Path) -> str:
     n_splits = int(train_cfg.get("n_splits", 5))
     embargo_days = int(train_cfg.get("embargo_days", 30))
     seed = int(train_cfg.get("seed", 42))
-    lgbm_params = {k: v for k, v in train_cfg.get("lgbm", {}).items()}
+    raw_lgbm = dict(train_cfg.get("lgbm", {}))
+    lgbm_params = {k: v for k, v in raw_lgbm.items() if k not in _NON_BOOSTER_KEYS}
+    base_lgbm = {**DEFAULT_PARAMS, **lgbm_params}
 
     frame = assemble_training_frame(silver_path)
     frame = filter_train_eval_rows(frame)
     if len(frame) < 100:
         raise RuntimeError(
             f"too few rows after right-censoring (n={len(frame)}); "
-            f"ingest more data (try `--nvd-max-records 5000`)"
+            f"ingest more data (try `--nvd-max-records 50000`)"
         )
 
-    feature_names = _feature_names(frame)
-    feature_matrix = frame.select(feature_names).to_numpy().astype(np.float32)
-    labels = frame.get_column("exploited_30d").to_numpy().astype(np.int8)
-    dates = frame.get_column("published_date").to_list()
+    train_frame = frame.filter(pl.col("published_date") < pl.lit(HELDOUT_PUBLISHED_FROM))
+    holdout_frame = frame.filter(pl.col("published_date") >= pl.lit(HELDOUT_PUBLISHED_FROM))
+
+    heldout_sha = (
+        compute_holdout_content_sha256(holdout_frame) if len(holdout_frame) > 0 else ""
+    )
+
+    if len(train_frame) < 100:
+        raise RuntimeError(
+            f"too few pre-holdout rows for temporal CV (n={len(train_frame)}); "
+            "ingest more history before the calendar holdout window."
+        )
+
+    feature_names = _feature_names(train_frame)
+    feature_matrix = train_frame.select(feature_names).to_numpy().astype(np.float32)
+    labels = train_frame.get_column("exploited_30d").to_numpy().astype(np.int8)
+    dates = train_frame.get_column("published_date").to_list()
 
     n_pos = int(labels.sum())
     if n_pos < 5:
         raise RuntimeError(
-            f"too few positive labels (n_pos={n_pos}); cannot fit a binary "
+            f"too few positive labels in training window (n_pos={n_pos}); cannot fit a binary "
             "classifier. Ingest more historical data."
         )
 
@@ -135,8 +185,10 @@ def train_lgbm(config_path: Path) -> str:
         n_splits = max(2, span_days // (horizon_days + embargo_days))
 
     fold_metrics: list[dict[str, float]] = []
+    fold_lgbm_params: list[dict[str, Any]] = []
     last_train_idx: list[int] = []
     last_valid_idx: list[int] = []
+    last_fold_params: dict[str, Any] = dict(base_lgbm)
     for train_idx, valid_idx in temporal_splits(
         dates,
         n_splits=n_splits,
@@ -147,7 +199,24 @@ def train_lgbm(config_path: Path) -> str:
         y_valid = labels[valid_idx]
         if y_train.sum() < 1 or y_valid.sum() < 1:
             continue
-        fold_model = LgbmModel(params=lgbm_params, seed=seed)
+        tuned_params = _sequential_tune_fold(
+            base_params=base_lgbm,
+            seed=seed,
+            x_train=feature_matrix[train_idx],
+            y_train=y_train,
+            x_valid=feature_matrix[valid_idx],
+            y_valid=y_valid,
+            feature_names=feature_names,
+        )
+        last_fold_params = tuned_params
+        fold_lgbm_params.append(
+            {
+                "max_depth": tuned_params["max_depth"],
+                "num_leaves": tuned_params["num_leaves"],
+                "min_data_in_leaf": tuned_params["min_data_in_leaf"],
+            }
+        )
+        fold_model = LgbmModel(params=tuned_params, seed=seed)
         fold_model.fit(
             feature_matrix[train_idx],
             y_train,
@@ -166,7 +235,7 @@ def train_lgbm(config_path: Path) -> str:
         )
 
     # Final fit on train + valid of the latest fold; calibrate on the held-out valid.
-    final_model = LgbmModel(params=lgbm_params, seed=seed)
+    final_model = LgbmModel(params=last_fold_params, seed=seed)
     final_model.fit(
         feature_matrix[last_train_idx],
         labels[last_train_idx],
@@ -198,13 +267,20 @@ def train_lgbm(config_path: Path) -> str:
         "silver_path": str(silver_path),
         "feature_names": feature_names,
         "n_features": len(feature_names),
-        "n_rows": int(len(frame)),
+        "n_rows": int(len(train_frame)),
+        "n_rows_censored_total": int(len(frame)),
+        "train_n_rows": int(len(train_frame)),
+        "heldout_n_rows": int(len(holdout_frame)),
+        "heldout_published_from": HELDOUT_PUBLISHED_FROM.isoformat(),
+        "heldout_content_sha256": heldout_sha,
         "n_pos": int(n_pos),
         "n_splits": n_splits,
         "horizon_days": horizon_days,
         "embargo_days": embargo_days,
         "seed": seed,
         "params": lgbm_params,
+        "final_lgbm_params": last_fold_params,
+        "fold_lgbm_params": fold_lgbm_params,
         "fold_metrics": fold_metrics,
         "avg_metrics": averaged,
         "final_valid_metrics": final_metrics,

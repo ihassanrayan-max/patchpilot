@@ -6,12 +6,12 @@ flat bronze Parquet row.
 
 Notes / honesty:
 
-* The NVD API is rate-limited (5 requests / 30 seconds without an API key).
-  We default to a small page size and a 6-second sleep between pages so a
-  small ingest finishes without 429s.
-* For "small real downloaded subset" runs (the default for ``make ingest``)
-  we cap at a couple of pages so a fresh clone finishes in well under a
-  minute. The flag ``max_records`` controls this.
+* The NVD API is rate-limited (about 5 requests / 30 seconds without an API key).
+  Without ``NVD_API_KEY``, callers should use a conservative sleep between pages
+  (see ``_DEFAULT_SLEEP_UNKEYED``). With an API key, NIST allows higher throughput;
+  PatchPilot defaults to ``_DEFAULT_SLEEP_KEYED`` between pages when a key is supplied.
+* The flag ``max_records`` caps total CVE rows pulled (default 50k); widen or shrink
+  as needed for your rate budget.
 * If the API is unreachable we raise ``IngestError`` -- we never invent
   rows. If a local cache JSON exists it is used in preference to the
   network so tests and offline iteration are deterministic.
@@ -35,9 +35,17 @@ from patchpilot.validate.schemas import nvd_bronze_schema
 
 NVD_API_URL = "https://services.nvd.nist.gov/rest/json/cves/2.0"
 _DEFAULT_PAGE_SIZE = 200
-_DEFAULT_MAX_RECORDS = 2000
-_DEFAULT_SLEEP = 6.5
+_DEFAULT_MAX_RECORDS = 50000
+_DEFAULT_SLEEP_UNKEYED = 6.5
+_DEFAULT_SLEEP_KEYED = 0.6
 _TIMEOUT = httpx.Timeout(60.0, connect=15.0)
+
+
+def resolve_nvd_sleep_seconds(api_key: str | None, sleep_seconds: float | None = None) -> float:
+    """Return sleep between NVD pages; explicit ``sleep_seconds`` wins."""
+    if sleep_seconds is not None:
+        return sleep_seconds
+    return _DEFAULT_SLEEP_KEYED if (api_key and api_key.strip()) else _DEFAULT_SLEEP_UNKEYED
 
 
 def _parse_iso_datetime(value: str | None) -> date | None:
@@ -209,16 +217,16 @@ def iter_nvd_records(
     until: date | None = None,
     page_size: int = _DEFAULT_PAGE_SIZE,
     max_records: int = _DEFAULT_MAX_RECORDS,
-    sleep_seconds: float = _DEFAULT_SLEEP,
+    sleep_seconds: float | None = None,
     api_key: str | None = None,
     cache_path: Path | None = None,
 ) -> Iterator[dict[str, Any]]:
     """Stream NVD vulnerability entries since ``since``.
 
     Honours the public NVD 120-day window per request and caps the total
-    record count via ``max_records`` so a fresh clone's ``make ingest``
-    finishes without burning the un-keyed rate budget. When ``cache_path``
-    exists we replay the cached pages instead of making network calls.
+    record count via ``max_records``. When ``sleep_seconds`` is omitted,
+    chooses keyed vs un-keyed pacing via :func:`resolve_nvd_sleep_seconds`.
+    When ``cache_path`` exists we replay cached pages instead of network calls.
     """
     if cache_path is not None and cache_path.exists():
         cached = json.loads(cache_path.read_text(encoding="utf-8"))
@@ -227,6 +235,8 @@ def iter_nvd_records(
         items = cached.get("vulnerabilities") or []
         yield from items[:max_records]
         return
+
+    sleep_eff = resolve_nvd_sleep_seconds(api_key, sleep_seconds)
 
     today = datetime.now(UTC)
     until_dt = datetime.combine(until or today.date(), datetime.min.time(), tzinfo=UTC)
@@ -260,9 +270,9 @@ def iter_nvd_records(
             start_index += len(vulns)
             if start_index >= total_results:
                 break
-            time.sleep(sleep_seconds)
+            time.sleep(sleep_eff)
         window_start = window_end + timedelta(seconds=1)
-        time.sleep(sleep_seconds)
+        time.sleep(sleep_eff)
 
     if cache_path is not None and aggregated_vulns:
         cache_path.parent.mkdir(parents=True, exist_ok=True)
@@ -279,7 +289,7 @@ def ingest_nvd(
     until: date | None = None,
     page_size: int = _DEFAULT_PAGE_SIZE,
     max_records: int = _DEFAULT_MAX_RECORDS,
-    sleep_seconds: float = _DEFAULT_SLEEP,
+    sleep_seconds: float | None = None,
     api_key: str | None = None,
     cache_dir: Path | None = None,
 ) -> Path:

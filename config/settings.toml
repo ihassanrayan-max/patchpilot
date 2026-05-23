@@ -13,7 +13,7 @@ mlruns_dir = ".mlruns"
 reports_dir = "docs/benchmarks"
 
 [ingest]
-nvd_since   = "2016-01-01"          # earliest publishedDate to fetch
+nvd_since   = "2018-01-01"          # earliest publishedDate to fetch
 epss_history_days = 365             # rolling EPSS snapshots to retain
 
 [label]

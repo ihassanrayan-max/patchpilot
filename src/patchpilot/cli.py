@@ -31,14 +31,18 @@ def ingest_cmd(
         str | None,
         typer.Option(help="Earliest publishedDate (YYYY-MM-DD) for NVD ingestion."),
     ] = None,
+    config: Annotated[
+        Path,
+        typer.Option(help="Path to settings TOML (default NVD since from [ingest].)."),
+    ] = Path("config/settings.toml"),
     out_dir: Annotated[
         Path,
         typer.Option(help="Bronze output directory."),
     ] = Path("data/bronze"),
     nvd_max_records: Annotated[
         int,
-        typer.Option(help="Maximum NVD records to pull (small subset by default)."),
-    ] = 2000,
+        typer.Option(help="Maximum NVD records to pull."),
+    ] = 50000,
     cache_dir: Annotated[
         Path | None,
         typer.Option(help="Optional cache dir for raw API payloads (reproducible)."),
@@ -49,9 +53,10 @@ def ingest_cmd(
     ] = False,
 ) -> None:
     """Run bronze ingestion from NVD / EPSS / KEV and rebuild the silver join."""
+    import tomllib
     from datetime import datetime as _dt
 
-    from flows.daily_ingest import cli_entry
+    from patchpilot.flows.daily_ingest import cli_entry
 
     source = source.lower()
     if source == "all":
@@ -68,6 +73,22 @@ def ingest_cmd(
             parsed_since = _dt.strptime(since, "%Y-%m-%d").date()
         except ValueError as exc:
             typer.echo(f"--since must be YYYY-MM-DD ({exc})", err=True)
+            raise typer.Exit(code=2) from exc
+    elif "nvd" in sources:
+        cfg_path = Path(config)
+        if not cfg_path.is_file():
+            typer.echo(f"config file missing at {cfg_path}; pass --since or fix path", err=True)
+            raise typer.Exit(code=2)
+        with cfg_path.open("rb") as fh:
+            cfg = tomllib.load(fh)
+        raw_since = (cfg.get("ingest") or {}).get("nvd_since")
+        if not isinstance(raw_since, str):
+            typer.echo("[ingest].nvd_since missing from settings TOML", err=True)
+            raise typer.Exit(code=2)
+        try:
+            parsed_since = _dt.strptime(raw_since, "%Y-%m-%d").date()
+        except ValueError as exc:
+            typer.echo(f"[ingest].nvd_since must be YYYY-MM-DD ({exc})", err=True)
             raise typer.Exit(code=2) from exc
 
     data_dir = out_dir.parent if out_dir.name == "bronze" else Path("data")
