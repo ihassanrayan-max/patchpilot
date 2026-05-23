@@ -5,9 +5,13 @@ on:
   schedule:
     - cron: "0 7 * * 1"   # Mondays 07:00 UTC
 
+permissions:
+  contents: write
+
 jobs:
   benchmark:
     runs-on: ubuntu-latest
+    timeout-minutes: 180
     steps:
       - uses: actions/checkout@v4
 
@@ -23,7 +27,12 @@ jobs:
         run: uv sync
 
       - name: Ingest
-        run: uv run patchpilot ingest --source all
+        env:
+          NVD_API_KEY: ${{ secrets.NVD_API_KEY }}
+        run: >
+          uv run patchpilot ingest --source all
+          --since 2024-01-01
+          --nvd-max-records 50000
 
       - name: Train
         run: uv run patchpilot train --config config/settings.toml
@@ -31,12 +40,18 @@ jobs:
       - name: Eval + write report
         run: uv run patchpilot eval --report docs/benchmarks/REPORT.md
 
+      - name: Assert benchmark gate
+        run: >
+          uv run python -c
+          "from patchpilot.eval.compare_epss import assert_benchmark_gate;
+          assert_benchmark_gate()"
+
       - name: Commit updated benchmark
         if: github.event_name == 'schedule'
         run: |
           git config user.name "patchpilot-bot"
           git config user.email "bot@patchpilot.dev"
-          git add docs/benchmarks/REPORT.md
+          git add docs/benchmarks/REPORT.md README.md
           if ! git diff --cached --quiet; then
             git commit -m "chore(bench): refresh PatchPilot vs EPSS report"
             git push

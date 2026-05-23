@@ -2,7 +2,10 @@
 
 from __future__ import annotations
 
+from pathlib import Path
+
 import numpy as np
+import pytest
 from sklearn.metrics import average_precision_score, brier_score_loss, roc_auc_score
 
 from patchpilot.eval.metrics import (
@@ -80,3 +83,33 @@ def test_metrics_agree_with_sklearn_and_references_on_synthetic_frame() -> None:
         rtol=1e-12,
         atol=1e-12,
     )
+
+
+def test_assert_benchmark_gate_rejects_empty_report(tmp_path: Path) -> None:
+    from patchpilot.eval.compare_epss import assert_benchmark_gate
+
+    report = tmp_path / "REPORT.md"
+    report.write_text(
+        "# PatchPilot vs EPSS - Benchmark Report\n\n**Status:** could not compute metrics.\n",
+        encoding="utf-8",
+    )
+    with pytest.raises(SystemExit) as exc:
+        assert_benchmark_gate(report_path=report, config_path=tmp_path / "missing.toml")
+    assert exc.value.code == 1
+
+
+def test_assert_benchmark_gate_accepts_report_within_margin(tmp_path: Path) -> None:
+    from patchpilot.eval.compare_epss import assert_benchmark_gate
+
+    report = tmp_path / "REPORT.md"
+    report.write_text(
+        "# PatchPilot vs EPSS - Benchmark Report\n\n"
+        "| Model       | AUC-PR | AUC-ROC | P@100 | Brier | ECE |\n"
+        "| ----------- | ------ | ------- | ----- | ----- | --- |\n"
+        "| PatchPilot  | 0.2000 | 0.7000 | 0.0300 | 0.0020 | 0.0010 |\n"
+        "| EPSS        | 0.4370 | 0.9650 | 0.0300 | 0.0140 | 0.0240 |\n",
+        encoding="utf-8",
+    )
+    config = tmp_path / "settings.toml"
+    config.write_text("[eval]\nauc_pr_margin = 1.0\n", encoding="utf-8")
+    assert_benchmark_gate(report_path=report, config_path=config)

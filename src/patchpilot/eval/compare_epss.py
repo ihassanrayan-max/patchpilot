@@ -11,6 +11,9 @@ computed (per the user's instruction not to fabricate).
 from __future__ import annotations
 
 import json
+import re
+import sys
+import tomllib
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any, cast
@@ -273,3 +276,43 @@ def write_report(
     )
 
     return report_path
+
+
+def assert_benchmark_gate(
+    report_path: Path = Path("docs/benchmarks/REPORT.md"),
+    *,
+    config_path: Path = Path("config/settings.toml"),
+) -> None:
+    """Exit with code 1 when the report lacks metrics or fails the AUC-PR margin."""
+    report_path = Path(report_path)
+    config_path = Path(config_path)
+    body = report_path.read_text(encoding="utf-8")
+    if "could not compute metrics" in body:
+        print(f"benchmark gate: no metrics in {report_path}", file=sys.stderr)
+        raise SystemExit(1)
+
+    def _parse_auc_pr(model: str) -> float | None:
+        match = re.search(rf"\| {re.escape(model)}\s+\| ([0-9.]+)", body)
+        if match is None:
+            return None
+        return float(match.group(1))
+
+    pp_auc_pr = _parse_auc_pr("PatchPilot")
+    epss_auc_pr = _parse_auc_pr("EPSS")
+    if pp_auc_pr is None or epss_auc_pr is None:
+        print("benchmark gate: could not parse headline AUC-PR values", file=sys.stderr)
+        raise SystemExit(1)
+
+    with config_path.open("rb") as fh:
+        eval_cfg = tomllib.load(fh).get("eval") or {}
+    margin_raw = eval_cfg.get("auc_pr_margin", 1.0)
+    margin = float(margin_raw)
+    gap = epss_auc_pr - pp_auc_pr
+    if gap > margin:
+        print(
+            "benchmark gate failed: EPSS AUC-PR "
+            f"({epss_auc_pr:.4f}) exceeds PatchPilot ({pp_auc_pr:.4f}) "
+            f"by {gap:.4f} > margin {margin:.4f}",
+            file=sys.stderr,
+        )
+        raise SystemExit(1)

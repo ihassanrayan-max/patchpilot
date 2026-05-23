@@ -50,3 +50,5 @@ port = 8000
 
 [eval]
 top_k = 100
+# CI fails when (EPSS AUC-PR - PatchPilot AUC-PR) exceeds this margin.
+auc_pr_margin = 1.0
