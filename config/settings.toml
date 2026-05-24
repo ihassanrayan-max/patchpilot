@@ -50,5 +50,11 @@ port = 8000
 
 [eval]
 top_k = 100
+# Rolling closed-window holdout: evaluate on the most recent N days of
+# right-censored CVEs that meet the minimum row/positive thresholds below.
+holdout_days = 90
+min_holdout_rows = 50
+min_holdout_positives = 1
+min_holdout_days = 14
 # CI fails when (EPSS AUC-PR - PatchPilot AUC-PR) exceeds this margin.
 auc_pr_margin = 1.0

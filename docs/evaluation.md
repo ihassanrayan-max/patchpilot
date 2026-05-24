@@ -10,11 +10,14 @@
 
 ## Comparison protocol
 
-1. Pick a held-out time window strictly after the last training fold.
-2. Score both PatchPilot and EPSS on the same CVE set.
-3. `patchpilot.eval.compare_epss.write_report` writes
-   `docs/benchmarks/REPORT.md` with the table headers defined in
-   `docs/benchmarks/REPORT.md` filled in with real numbers.
+1. Apply the 30-day right-censoring rule so labels are observable.
+2. Select the most recent rolling closed-window holdout that meets
+   `[eval].min_holdout_rows` and `[eval].min_holdout_positives`
+   (default: last 90 days, at least 50 rows and 1 positive).
+3. Train on all older right-censored rows; score both PatchPilot and EPSS on
+   the same holdout slice.
+4. `patchpilot.eval.compare_epss.write_report` writes
+   `docs/benchmarks/REPORT.md` and syncs the README benchmark table.
 
 ## CI gate
 

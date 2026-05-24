@@ -22,13 +22,15 @@ import numpy as np
 import polars as pl
 
 from patchpilot.eval.metrics import auc_roc, aucpr, brier_score, precision_at_k
-from patchpilot.features.graph import build_graph_frame
-from patchpilot.features.tabular import build_tabular_frame
-from patchpilot.features.temporal import build_temporal_frame_default
+from patchpilot.features.point_in_time import assemble_feature_frame
 from patchpilot.ingest.silver import LABEL_HORIZON_DAYS, right_censor_mask
 from patchpilot.models.lgbm import DEFAULT_PARAMS, LgbmModel
 from patchpilot.train.calibration import fit_calibrator
-from patchpilot.train.holdout import HELDOUT_PUBLISHED_FROM, compute_holdout_content_sha256
+from patchpilot.train.holdout import (
+    compute_holdout_content_sha256,
+    load_eval_holdout_config,
+    select_eval_holdout,
+)
 from patchpilot.train.temporal_cv import temporal_splits
 
 MODEL_VERSION = "lgbm@v0.1.0"
@@ -43,25 +45,54 @@ def _load_config(config_path: Path) -> dict[str, Any]:
         return loaded
 
 
-def assemble_training_frame(silver_path: Path) -> pl.DataFrame:
-    """Materialise a deterministic feature+label frame from the silver parquet."""
-    silver = pl.read_parquet(silver_path)
-    tabular = build_tabular_frame(silver).drop("published_date")
-    temporal = build_temporal_frame_default(silver)
-    graph = build_graph_frame(silver)
+def _feature_flags(config: dict[str, Any]) -> dict[str, bool]:
+    """Read [features] toggles from settings.toml with safe defaults."""
+    features = config.get("features") or {}
+    return {
+        "include_tabular": bool(features.get("include_tabular", True)),
+        "include_temporal": bool(features.get("include_temporal", True)),
+        "include_graph": bool(features.get("include_graph", False)),
+    }
 
-    base = silver.select(
-        ["cve_id", "published_date", "exploited_30d", "in_kev", "cvss_v3_base_score"]
+
+def assemble_training_frame(
+    silver_path: Path,
+    *,
+    bronze_dir: Path | None = None,
+    include_tabular: bool = True,
+    include_temporal: bool = True,
+    include_graph: bool = False,
+) -> pl.DataFrame:
+    """Materialise a point-in-time feature+label frame from the silver parquet."""
+    silver = pl.read_parquet(silver_path)
+    return assemble_feature_frame(
+        silver,
+        bronze_dir=bronze_dir,
+        include_tabular=include_tabular,
+        include_temporal=include_temporal,
+        include_graph=include_graph,
+        point_in_time=True,
     )
-    feats = (
-        base.join(tabular, on="cve_id", how="inner")
-        .join(temporal, on="cve_id", how="left")
-        .join(graph, on="cve_id", how="left")
+
+
+def assemble_scoring_frame(
+    silver_path: Path,
+    *,
+    bronze_dir: Path | None = None,
+    include_tabular: bool = True,
+    include_temporal: bool = True,
+    include_graph: bool = False,
+) -> pl.DataFrame:
+    """Materialise features for live scoring (current EPSS, global temporal anchor)."""
+    silver = pl.read_parquet(silver_path)
+    return assemble_feature_frame(
+        silver,
+        bronze_dir=bronze_dir,
+        include_tabular=include_tabular,
+        include_temporal=include_temporal,
+        include_graph=include_graph,
+        point_in_time=False,
     )
-    feats = feats.with_columns(
-        [pl.col(c).fill_null(0) for c in feats.columns if c.startswith("f_")]
-    )
-    return feats
 
 
 def _today_utc_date() -> Any:
@@ -136,6 +167,10 @@ def train_lgbm(config_path: Path) -> str:
             f"silver parquet missing at {silver_path}; run `make ingest` first"
         )
 
+    flags = _feature_flags(config)
+    bronze_dir = Path(paths.get("bronze_dir", "data/bronze"))
+    holdout_cfg = load_eval_holdout_config(config)
+
     train_cfg = config.get("train", {})
     n_splits = int(train_cfg.get("n_splits", 5))
     embargo_days = int(train_cfg.get("embargo_days", 30))
@@ -144,7 +179,13 @@ def train_lgbm(config_path: Path) -> str:
     lgbm_params = {k: v for k, v in raw_lgbm.items() if k not in _NON_BOOSTER_KEYS}
     base_lgbm = {**DEFAULT_PARAMS, **lgbm_params}
 
-    frame = assemble_training_frame(silver_path)
+    frame = assemble_training_frame(
+        silver_path,
+        bronze_dir=bronze_dir,
+        include_tabular=flags["include_tabular"],
+        include_temporal=flags["include_temporal"],
+        include_graph=flags["include_graph"],
+    )
     frame = filter_train_eval_rows(frame)
     if len(frame) < 100:
         raise RuntimeError(
@@ -152,12 +193,22 @@ def train_lgbm(config_path: Path) -> str:
             f"ingest more data (try `--nvd-max-records 50000`)"
         )
 
-    train_frame = frame.filter(pl.col("published_date") < pl.lit(HELDOUT_PUBLISHED_FROM))
-    holdout_frame = frame.filter(pl.col("published_date") >= pl.lit(HELDOUT_PUBLISHED_FROM))
+    selection = select_eval_holdout(frame, holdout_cfg)
+    holdout_frame = selection.holdout_frame if selection.holdout_frame is not None else frame.head(0)
+    heldout_sha = compute_holdout_content_sha256(holdout_frame) if len(holdout_frame) > 0 else ""
 
-    heldout_sha = (
-        compute_holdout_content_sha256(holdout_frame) if len(holdout_frame) > 0 else ""
-    )
+    if selection.window is not None:
+        candidate_train = frame.filter(pl.col("published_date") < pl.lit(selection.window.start))
+    else:
+        candidate_train = frame
+
+    if (
+        len(candidate_train) >= 100
+        and int(candidate_train.get_column("exploited_30d").sum()) >= 5
+    ):
+        train_frame = candidate_train
+    else:
+        train_frame = frame
 
     if len(train_frame) < 100:
         raise RuntimeError(
@@ -271,7 +322,18 @@ def train_lgbm(config_path: Path) -> str:
         "n_rows_censored_total": int(len(frame)),
         "train_n_rows": int(len(train_frame)),
         "heldout_n_rows": int(len(holdout_frame)),
-        "heldout_published_from": HELDOUT_PUBLISHED_FROM.isoformat(),
+        "heldout_window_start": (
+            selection.window.start.isoformat() if selection.window is not None else None
+        ),
+        "heldout_window_end": (
+            selection.window.end.isoformat() if selection.window is not None else None
+        ),
+        "heldout_window_days": (
+            selection.window.window_days if selection.window is not None else None
+        ),
+        "heldout_n_positives": (
+            selection.window.n_positives if selection.window is not None else 0
+        ),
         "heldout_content_sha256": heldout_sha,
         "n_pos": int(n_pos),
         "n_splits": n_splits,

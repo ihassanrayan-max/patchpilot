@@ -9,6 +9,7 @@ they live in the Phase 6 backlog.
 
 from __future__ import annotations
 
+from datetime import date
 from pathlib import Path
 
 import polars as pl
@@ -21,10 +22,11 @@ GRAPH_FEATURE_COLUMNS: list[str] = [
 ]
 
 
-def build_graph_frame(silver: pl.DataFrame) -> pl.DataFrame:
-    """Build CWE-popularity features (pure, deterministic, label-free)."""
+def build_graph_frame_as_of(silver: pl.DataFrame, as_of: date) -> pl.DataFrame:
+    """Build CWE-popularity features using only CVEs visible on or before ``as_of``."""
+    visible = silver.filter(pl.col("published_date") <= as_of)
     exploded = (
-        silver.select(["cve_id", "cwe_ids"])
+        visible.select(["cve_id", "cwe_ids"])
         .with_columns(pl.col("cwe_ids").fill_null([]))
         .explode("cwe_ids")
         .rename({"cwe_ids": "cwe_id"})
@@ -49,6 +51,13 @@ def build_graph_frame(silver: pl.DataFrame) -> pl.DataFrame:
         pl.col("f_mean_cwe_popularity").fill_null(0.0).cast(pl.Float32),
         pl.col("f_cwe_distinct_count").cast(pl.Int32),
     )
+
+
+def build_graph_frame(silver: pl.DataFrame) -> pl.DataFrame:
+    """Build CWE-popularity over the full silver frame (live scoring helper)."""
+    raw_max = silver.get_column("published_date").max()
+    anchor = raw_max if isinstance(raw_max, date) else date.today()
+    return build_graph_frame_as_of(silver, as_of=anchor)
 
 
 def build_graph_features(silver_path: Path, out_path: Path) -> Path:

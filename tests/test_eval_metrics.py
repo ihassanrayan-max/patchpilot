@@ -90,7 +90,7 @@ def test_assert_benchmark_gate_rejects_empty_report(tmp_path: Path) -> None:
 
     report = tmp_path / "REPORT.md"
     report.write_text(
-        "# PatchPilot vs EPSS - Benchmark Report\n\n**Status:** could not compute metrics.\n",
+        "# PatchPilot vs EPSS - Benchmark Report\n\n**Status:** unavailable - could not compute metrics.\n",
         encoding="utf-8",
     )
     with pytest.raises(SystemExit) as exc:
@@ -106,8 +106,8 @@ def test_assert_benchmark_gate_accepts_report_within_margin(tmp_path: Path) -> N
         "# PatchPilot vs EPSS - Benchmark Report\n\n"
         "| Model       | AUC-PR | AUC-ROC | P@100 | Brier | ECE |\n"
         "| ----------- | ------ | ------- | ----- | ----- | --- |\n"
-        "| PatchPilot  | 0.2000 | 0.7000 | 0.0300 | 0.0020 | 0.0010 |\n"
-        "| EPSS        | 0.4370 | 0.9650 | 0.0300 | 0.0140 | 0.0240 |\n",
+        "| PatchPilot | 0.2000 | 0.7000 | 0.0300 | 0.0020 | 0.0010 |\n"
+        "| EPSS | 0.4370 | 0.9650 | 0.0300 | 0.0140 | 0.0240 |\n",
         encoding="utf-8",
     )
     config = tmp_path / "settings.toml"

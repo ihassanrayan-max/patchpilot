@@ -26,10 +26,6 @@ TABULAR_FEATURE_COLUMNS: list[str] = [
     "f_description_len",
     "f_ref_has_exploit",
     "f_ref_has_patch",
-    "f_epss_score",
-    "f_epss_percentile",
-    "f_in_kev_prior",
-    "f_epss_percentile_x_in_kev",
 ]
 
 
@@ -52,13 +48,6 @@ def build_tabular_frame(silver: pl.DataFrame) -> pl.DataFrame:
         pl.col("description_len").cast(pl.Int32).alias("f_description_len"),
         pl.col("ref_has_exploit").cast(pl.Int8).alias("f_ref_has_exploit"),
         pl.col("ref_has_patch").cast(pl.Int8).alias("f_ref_has_patch"),
-        pl.col("epss_score").cast(pl.Float32).fill_null(0.0).alias("f_epss_score"),
-        pl.col("epss_percentile").cast(pl.Float32).fill_null(0.0).alias("f_epss_percentile"),
-        pl.col("in_kev").cast(pl.Int8).alias("f_in_kev_prior"),
-        (
-            pl.col("epss_percentile").cast(pl.Float32).fill_null(0.0)
-            * pl.col("in_kev").cast(pl.Float32)
-        ).alias("f_epss_percentile_x_in_kev"),
     )
 
 

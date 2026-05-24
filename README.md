@@ -3,8 +3,8 @@
 PatchPilot is an open-source ML system that predicts which CVEs will be
 exploited within the next 30 days and ranks the vulnerabilities discovered
 in a CycloneDX SBOM by that probability. It is benchmarked head-to-head
-against the public EPSS baseline on the same calendar hold-out (`published_date >= 2025-01-01`,
-after right-censoring) with the same
+against the public EPSS baseline on the same rolling closed-window holdout
+(most recent right-censored slice meeting configured minimums) with the same
 metrics, so users can see whether (and where) PatchPilot beats the freely
 available reference.
 
@@ -35,11 +35,11 @@ flowchart LR
 
 | Model       | AUC-PR | AUC-ROC | P@100 | Brier | ECE |
 | ----------- | ------ | ------- | ----- | ----- | --- |
-| PatchPilot  | 0.146 | 0.753 | 0.030 | 0.002 | 0.001 |
-| EPSS        | 0.437 | 0.965 | 0.030 | 0.014 | 0.024 |
+| PatchPilot  | 0.012 | 0.637 | 0.050 | 0.002 | 0.001 |
+| EPSS        | 0.317 | 0.901 | 0.100 | 0.013 | 0.023 |
 
-Numbers are populated by Phase 3 (`make eval`) after ingest/train on your Silver snapshot.
-Placeholder `n/a` values mean this checkout has not run eval yet for the **2025+ calendar hold-out**.
+Numbers are populated by `make eval` after ingest/train on your silver snapshot.
+`n/a` values mean metrics are unavailable — see [`docs/benchmarks/REPORT.md`](docs/benchmarks/REPORT.md) for the reason.
 Weekly cron: [`.github/workflows/eval-vs-epss.yml`](.github/workflows/eval-vs-epss.yml).
 
 ## Quickstart

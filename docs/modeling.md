@@ -18,8 +18,10 @@ calibrated with isotonic regression on the held-out validation fold
 
 ## Anti-leakage rules
 
-- Features computed strictly at `as_of` — no information after the
-  validation-fold start date may enter training features.
+- Features computed strictly at each CVE's ``published_date`` for training/eval
+  (EPSS snapshot on or before publication; temporal/graph counts exclude future CVEs).
+- Current KEV membership is **not** used as a model feature (label leakage).
+- Live scoring uses current EPSS via :func:`assemble_scoring_frame`.
 - Embargo between train end and validation start ≥ `horizon_days` (30).
 - Right-censored window: CVEs published in the last 30 days are excluded
   from both train and eval (their 30-day window is not complete).

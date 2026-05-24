@@ -133,10 +133,10 @@ class _ModelState:
         if self.silver is None or self.model is None or not self.feature_names:
             self.feature_lookup = {}
             return
-        from patchpilot.train.train import assemble_training_frame
+        from patchpilot.train.train import assemble_scoring_frame
 
         try:
-            frame = assemble_training_frame(self.silver_path)
+            frame = assemble_scoring_frame(self.silver_path)
         except Exception:  # noqa: BLE001
             self.feature_lookup = {}
             return

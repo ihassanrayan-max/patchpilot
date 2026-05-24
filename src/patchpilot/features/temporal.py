@@ -24,7 +24,7 @@ TEMPORAL_FEATURE_COLUMNS: list[str] = [
 ]
 
 
-def build_temporal_frame(silver: pl.DataFrame, as_of: date) -> pl.DataFrame:
+def build_temporal_frame_as_of(silver: pl.DataFrame, as_of: date) -> pl.DataFrame:
     """Pure transformation; never reads information past ``as_of``."""
     visible = silver.filter(pl.col("published_date") <= as_of)
 
@@ -61,19 +61,23 @@ def build_temporal_features(silver_path: Path, as_of: date, out_path: Path) -> P
     silver_path = Path(silver_path)
     out_path = Path(out_path)
     silver = pl.read_parquet(silver_path)
-    features = build_temporal_frame(silver, as_of=as_of)
+    features = build_temporal_frame_as_of(silver, as_of=as_of)
     out_path.parent.mkdir(parents=True, exist_ok=True)
     features.write_parquet(out_path, compression="zstd")
     return out_path
 
 
+def build_temporal_frame(silver: pl.DataFrame, as_of: date) -> pl.DataFrame:
+    """Alias for :func:`build_temporal_frame_as_of` (stable public name)."""
+    return build_temporal_frame_as_of(silver, as_of=as_of)
+
+
 def build_temporal_frame_default(silver: pl.DataFrame) -> pl.DataFrame:
     """Use the most recent ``published_date`` (or today) as ``as_of``.
 
-    Helper for training: we want features as if "today" is the day of the
-    latest CVE in the silver frame. The temporal-cv splitter restricts
-    which rows enter each fold so this does not leak.
+    Intended for live scoring only; training uses per-row ``as_of`` via
+    :func:`patchpilot.features.point_in_time.build_temporal_frame_per_row`.
     """
     raw_max = silver.get_column("published_date").max()
     anchor = raw_max if isinstance(raw_max, date) else date.today()
-    return build_temporal_frame(silver, as_of=anchor)
+    return build_temporal_frame_as_of(silver, as_of=anchor)
