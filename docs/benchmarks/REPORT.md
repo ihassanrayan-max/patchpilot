@@ -1,12 +1,12 @@
 # PatchPilot vs EPSS - Benchmark Report
 
-_Generated: 2026-06-01T13:34:18.725888+00:00_
+_Generated: 2026-06-08T12:28:50.870295+00:00_
 
 **Status:** ok - metrics computed.
 
-Model artifact: `.mlruns/run-0abab5c1af-20260601T133414/model.pkl`  
+Model artifact: `.mlruns/run-df07568560-20260608T122846/model.pkl`  
 Model version: `lgbm@v0.1.0`  
-Trained at: `2026-06-01T13:34:14.569112+00:00`  
+Trained at: `2026-06-08T12:28:46.641840+00:00`  
 Features: 18
 
 ## Dataset windows
@@ -30,8 +30,8 @@ Rows with `published_date > today_utc - 30 days` are excluded because their 30-d
 
 | Model | AUC-PR | AUC-ROC | P@100 | Brier | ECE |
 | ----- | ------ | ------- | ----- | ----- | --- |
-| PatchPilot | 0.0146 | 0.8610 | 0.0300 | 0.0025 | 0.0018 |
-| EPSS | 0.3484 | 0.9893 | 0.1400 | 0.0059 | 0.0112 |
+| PatchPilot | 0.0132 | 0.8250 | 0.0300 | 0.0026 | 0.0017 |
+| EPSS | 0.3528 | 0.9891 | 0.1400 | 0.0060 | 0.0115 |
 
 ## Notes
 
