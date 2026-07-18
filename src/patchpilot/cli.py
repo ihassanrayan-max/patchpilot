@@ -1,8 +1,10 @@
 """Typer-based ``patchpilot`` command-line entry point.
 
-Phase 0 wires sub-commands ``ingest``, ``train``, ``eval``, and ``serve`` that
-exit with a clear ``Phase N`` message until their implementing phase lands.
-The Makefile invokes these commands; Dockerfiles use them as ``CMD``.
+Sub-commands: ``ingest``, ``train``, ``eval``, ``rank``, and ``serve``.
+``rank`` and ``serve`` never reimplement blend math; both go through
+:func:`patchpilot.serve.api.rank_sbom`, which itself calls
+:func:`patchpilot.serve.scoring.score_cve_ids`. The Makefile invokes these
+commands; Dockerfiles use them as ``CMD``.
 """
 
 from __future__ import annotations
@@ -237,7 +239,7 @@ def serve_cmd(
     host: Annotated[str, typer.Option(help="Bind host.")] = "0.0.0.0",  # noqa: S104
     port: Annotated[int, typer.Option(help="Bind port.")] = 8000,
 ) -> None:
-    """Start the FastAPI service via uvicorn. Phase 4 wires a real model."""
+    """Start the FastAPI service via uvicorn."""
     import uvicorn
 
     uvicorn.run("patchpilot.serve.api:app", host=host, port=port, reload=False)

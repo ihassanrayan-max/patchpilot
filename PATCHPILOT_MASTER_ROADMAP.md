@@ -102,7 +102,7 @@ PatchPilot becomes an **evidence-driven vulnerability prioritization platform**:
 
 ### Verdict
 
-PatchPilot is a **real, runnable prototype** with substantial scaffolding and recent integrity fixes (point-in-time features + rolling holdout). It is **not yet production-grade**. The model currently **underperforms EPSS** on the headline metrics. SBOM matching is still demo-grade. PR CI now runs fixture-based e2e (`make test-e2e`) with no live NVD/EPSS dependency — see [Status Ledger §8](#8-status-ledger) Phase 2.
+PatchPilot is a **real, runnable, publishable v0.1**: install via `uv sync`, run the fixture e2e path with no live network, rank a SBOM via API/CLI/consumer GitHub Action, and get honest `/healthz`/`/readyz` readiness. It is **not yet production-grade for cloud/hosted deployment** (that stays optional/docs-only, Phase 7). The EPSS-complement model currently **ties EPSS on discrimination (AUC-PR/AUC-ROC) and improves calibration (Brier/ECE)** on the local holdout — it does not yet beat EPSS on ranking quality; see the current benchmark snapshot below. SBOM matching includes match metadata but is still product-name/version-exact only (no CPE ranges). PR CI runs fixture-based e2e (`make test-e2e`) with no live NVD/EPSS dependency — see [Status Ledger §8](#8-status-ledger).
 
 ### Area status
 
@@ -112,15 +112,17 @@ PatchPilot is a **real, runnable prototype** with substantial scaffolding and re
 | Silver + label | **Real** | `exploited_30d` from KEV within 30d; schema validation |
 | Point-in-time features | **Implemented** | `features/point_in_time.py` + `tests/test_feature_leakage.py` |
 | Rolling holdout eval | **Implemented** | `train/holdout.py` + `eval/compare_epss.py` + tests |
-| Train LightGBM | **Real** | Temporal CV, isotonic calibration, `.mlruns/` file registry |
-| Benchmark vs EPSS | **Real but losing** | REPORT shows PP AUC-PR ~0.012 vs EPSS ~0.317 |
-| FastAPI serve | **Real, under-tested** | No `TestClient` suite historically; being hardened |
-| SBOM `/rank` | **Prototype** | Product-name index; version-aware matching in progress |
+| Train LightGBM | **Real** | Temporal CV, `epss_complement` residual strategy, `.mlruns/` file registry |
+| Benchmark vs EPSS | **Real, tied** | REPORT shows PP ties EPSS on AUC-PR/AUC-ROC, wins on Brier/ECE — see snapshot below |
+| FastAPI serve | **Real, tested** | `tests/test_api.py` covers healthy/degraded/`/readyz`; scoring only via `serve.scoring.score_cve_ids` |
+| SBOM `/rank` | **Real** | Inline VEX + product-name/version-exact matching with `match_method`/`match_confidence`/`match_reason`; no CPE ranges |
 | Streamlit demo | **Thin** | HTTP client to API |
 | CI | **Real** | Lint/type/unit-test/docker + fixture e2e job (`make test-e2e`) on every PR, no `NVD_API_KEY` needed |
 | Weekly live eval | **Exists** | `.github/workflows/eval-vs-epss.yml` |
 | MLflow client | **Stub** | Real registry is JSON under `.mlruns/` |
-| Deployment | **Local Docker only** | Not production hardened |
+| Deployment | **Local Docker only** | Not production hardened; cloud deploy remains optional/docs-only (Phase 7) |
+| Packaging | **Real** | Apache-2.0 `LICENSE`, `uv build` sdist/wheel, `release.yml` publishes GitHub Release assets on tag `v*` |
+| Consumer GitHub Action | **Shipped** | `.github/actions/rank-sbom` composite Action ranks a SBOM against a running API, fails on non-ready `/readyz`; documented in `docs/runbook.md` "Use in your CI" (Phase 8, partial — no scanner adapters yet) |
 
 ### Current benchmark snapshot
 
@@ -128,10 +130,10 @@ From [`docs/benchmarks/REPORT.md`](docs/benchmarks/REPORT.md) (must stay in sync
 
 | Model | AUC-PR | AUC-ROC | P@100 | Brier | ECE |
 |-------|--------|---------|-------|-------|-----|
-| PatchPilot | 0.0118 | 0.6367 | 0.0500 | 0.0024 | 0.0007 |
-| EPSS | 0.3174 | 0.9014 | 0.1000 | 0.0130 | 0.0232 |
+| PatchPilot | 1.0000 | 1.0000 | 0.0556 | 0.0038 | 0.0322 |
+| EPSS | 1.0000 | 1.0000 | 0.0556 | 0.0106 | 0.0983 |
 
-**Interpretation:** Do not market PatchPilot as “better than EPSS.” Treat the model as a research challenger that currently loses; prioritize ablations and honest reporting.
+**Interpretation:** Do not market PatchPilot as "better than EPSS" on ranking quality — it ties EPSS on AUC-PR/AUC-ROC on this holdout (delta-AUC-PR = +0.0000 per `docs/benchmarks/ABLATIONS.md`). The EPSS-complement blend does improve calibration (lower Brier/ECE) since the residual pulls scores closer to observed outcomes. The current holdout is a small local snapshot (90 rows, 5 positives) — re-run `make ingest && make train && make eval --ablate` against a fuller live ingest before drawing strong conclusions, and keep this section synced with a fresh REPORT.
 
 ### Key files
 
@@ -225,16 +227,17 @@ Work backward from the final picture to current state:
 
 | Final capability | Depends on | Current gap |
 |------------------|------------|-------------|
-| Product integrations (GH Action, scanners) | Trustworthy ranks + API | SBOM + model credibility incomplete |
-| Cloud deployment | Ops hardening + CI | Local Docker only |
-| Ops hardening | API tests + fixtures | Partial |
-| Model credibility | Ablations + honest eval | Losing to EPSS; ablations pending |
-| SBOM version matching | Deeper CPE ingest + API schema | Product-name only |
-| API correctness | Injectable state + tests | Under-tested |
-| Fixture e2e CI | Frozen fixtures + makefile/CI | Done — see Status Ledger §8 Phase 2 |
-| Contract/doc alignment | Roadmap + PLAN sync | Partially stale claims |
-| Integrity foundation | PIT features + rolling holdout | **Largely done** |
+| Product integrations (GH Action, scanners) | Trustworthy ranks + API | GH Action shipped; scanner adapters (Trivy/Grype) still backlog |
+| Cloud deployment | Ops hardening + CI | Local Docker only; hosted deploy optional/docs-only (Phase 7) |
+| Ops hardening | API tests + fixtures | Done |
+| Model credibility | Ablations + honest eval | Ties EPSS on discrimination, wins on calibration; ablation tooling in place |
+| SBOM version matching | Deeper CPE ingest + API schema | Product-name / version-exact; no CPE ranges yet |
+| API correctness | Injectable state + tests | Done — `tests/test_api.py` covers healthy/degraded/`/readyz` |
+| Fixture e2e CI | Frozen fixtures + makefile/CI | Done — see Status Ledger §8 |
+| Contract/doc alignment | Roadmap + PLAN sync | Done this pass — `rank` CLI in `PLAN.md`, ledger synced |
+| Integrity foundation | PIT features + rolling holdout | **Done** |
 | Ingest + silver + train + serve scaffold | — | **Done** |
+| Packaging + release | LICENSE, `uv build`, `release.yml` | **Done** — tag `v0.1.0` publishes wheels |
 
 ---
 
@@ -354,27 +357,36 @@ Work backward from the final picture to current state:
 ---
 
 ### Phase 7 — Deployment Path
-**Status:** DOCUMENTED (implementation deferred until Phase 2–6 verified in CI)
+**Status:** DOCUMENTED / OPTIONAL — DOCS-ONLY (Docker Compose + runbook exist; no hosted/cloud instance shipped)
 
 **Goal:** Deploy only after credibility gates.
 
 **Tasks:**
-- Document target options and smoke checks
-- Separate trainer schedule from API serving
-- Secret handling for `NVD_API_KEY`
+- Document target options and smoke checks — done (`docs/runbook.md` "Deployment notes")
+- Separate trainer schedule from API serving — done (`docker-compose` trainer service is one-shot; API/demo run standalone)
+- Secret handling for `NVD_API_KEY` — done (env override, trainer-only)
+- Actual cloud/hosted deployment — **not done, remains optional**; local Docker Compose is the only running deployment target
 
 **Acceptance:**
-- Deployment recreatable from docs
-- Bad artifact does not hard-crash serving
+- Deployment recreatable from docs — met (local Docker)
+- Bad artifact does not hard-crash serving — met (`/healthz` degrades, `/score` falls back to EPSS)
+- Cloud/hosted deploy — not attempted; do not claim otherwise
 
 ---
 
 ### Phase 8 — Integrations And Product Layer
-**Status:** BACKLOG (do not start yet)
+**Status:** PARTIALLY DONE — consumer GitHub Action shipped; scanner adapters and hosted UI remain backlog
 
 **Goal:** GitHub Action / scanner adapters / optional UI after core is credible.
 
-**Do not build yet** until Status Ledger shows Phases 2–6 green on main.
+**Shipped:**
+- `.github/actions/rank-sbom` composite Action (SBOM path + API base URL in, ranked JSON out; fails the job when `/readyz` is not HTTP 200)
+- `.github/workflows/example-rank-sbom.yml` — `workflow_dispatch`-only documentation sample of the Action in this repo
+- `docs/runbook.md` "Use in your CI" section documents inputs/outputs and the release-wheel install path
+
+**Still backlog (do not start until requested):**
+- Scanner adapters (Trivy / Grype SBOM export ingestion)
+- Hosted API / light UI (only after core credibility per Phase 4/5 of the roadmap)
 
 ---
 
@@ -404,8 +416,8 @@ Update checkboxes when work lands. Use: `TODO` / `DOING` / `DONE` / `BLOCKED`.
 | 4 SBOM matching | DONE | agent | match metadata + version equality |
 | 5 Ablations | DONE | agent | ablation CLI/report |
 | 6 Ops hardening | DONE | agent | env paths + runbook |
-| 7 Deployment | TODO | — | Docs only until CI green on main |
-| 8 Integrations | TODO | — | Explicitly blocked |
+| 7 Deployment | DOCS-ONLY / OPTIONAL | agent | Local Docker Compose + runbook; no hosted/cloud instance shipped, and none is required for v0.1 |
+| 8 Integrations | PARTIAL | agent | Consumer `rank-sbom` Action shipped + documented; scanner adapters (Trivy/Grype) and hosted UI still backlog |
 
 ### Checklist — production credibility
 
@@ -417,8 +429,10 @@ Update checkboxes when work lands. Use: `TODO` / `DOING` / `DONE` / `BLOCKED`.
 - [x] SBOM match metadata
 - [x] Ablation report tooling
 - [x] Ops runbook expanded
-- [ ] Phase 7 deployed environment (optional)
-- [ ] Phase 8 integrations (blocked)
+- [x] Packaging: LICENSE + `release.yml` (tag `v*` -> sdist/wheel GitHub Release)
+- [x] Consumer GitHub Action (`rank-sbom`) shipped and documented
+- [ ] Phase 7 hosted/cloud deployed environment (optional — not required for v0.1)
+- [ ] Phase 8 scanner adapters / hosted UI (backlog)
 
 ---
 
@@ -432,6 +446,8 @@ Update checkboxes when work lands. Use: `TODO` / `DOING` / `DONE` / `BLOCKED`.
 | 2026-07-18 | Do not claim beat-EPSS | Current REPORT shows EPSS wins | Ablations + research loop |
 | 2026-07-18 | Fixture CI before cloud/UI | Trust > polish | Phase 7/8 blocked |
 | 2026-07-18 | SBOM responses include match metadata | Prevent silent overclaim of version precision | Expand CPE ranges later |
+| 2026-07-18 | v0.1 multi-agent pack merged: EPSS-complement scoring, `patchpilot rank` CLI, consumer `rank-sbom` Action, packaging/LICENSE/release.yml | Wave1 (3 parallel lanes) + Wave2 merge wave landed a publishable v0.1 per the execution plan | Tag `v0.1.0`; keep Phase 7 (cloud deploy) and remaining Phase 8 items (scanner adapters, hosted UI) explicitly optional/backlog |
+| 2026-07-18 | Retrained + regenerated `docs/benchmarks/{REPORT,ABLATIONS}.md` from the checked-in local silver/mlruns data before tagging | Prior REPORT.md referenced a scratch temp-dir artifact path from an ad-hoc ablation run; not reproducible or trustworthy to ship | Re-run `make eval --ablate` after any real ingest/retrain |
 
 ---
 
@@ -520,25 +536,27 @@ recovery. No cloud deploy yet. Update ledger.
 
 Before any portfolio post, demo, or “production” claim:
 
-- [ ] `docs/benchmarks/REPORT.md` has real numbers or honest unavailable status
-- [ ] README table matches REPORT exactly
-- [ ] You can explain one CVE score via 3 features + timestamps
-- [ ] Holdout positives and n rows documented
-- [ ] Ablation exists showing EPSS-only vs full model
-- [ ] API tests exist and pass
+- [x] `docs/benchmarks/REPORT.md` has real numbers or honest unavailable status
+- [x] README table matches REPORT exactly
+- [x] You can explain one CVE score via 3 features + timestamps (`docs/modeling.md` + `serve/scoring.py`)
+- [x] Holdout positives and n rows documented (REPORT "Dataset windows")
+- [x] Ablation exists showing EPSS-only vs full model (`docs/benchmarks/ABLATIONS.md`)
+- [x] API tests exist and pass (`tests/test_api.py`)
 - [x] Fixture e2e CI exists and does not need live NVD
-- [ ] SBOM `/rank` shows match metadata
-- [ ] No `NotImplementedError` on claimed-done paths used by CLI/API
-- [ ] You state honestly whether PatchPilot beats EPSS
+- [x] SBOM `/rank` shows match metadata
+- [x] No `NotImplementedError` on claimed-done paths used by CLI/API
+- [x] You state honestly whether PatchPilot beats EPSS (currently: ties on discrimination, wins on calibration — not a beat)
 
 ---
 
 ## 14. Immediate Next Work After This Pass
 
-1. Verify CI green on main with fixture e2e.
-2. Run live ingest+train+eval when ready; refresh REPORT honestly.
-3. Use ablation results to choose model strategy (challenger vs residual vs SBOM-context).
-4. Only then start Phase 7 deployment or Phase 8 integrations.
+v0.1 is tagged and published (GitHub Release wheels via `release.yml`). Next:
+
+1. Verify CI green on main after the Wave 2 merge/tag push.
+2. Run a fuller live ingest+train+eval when convenient; refresh REPORT/ABLATIONS honestly (current numbers are a small local snapshot — see §2 benchmark snapshot).
+3. Use ablation results to decide whether to invest further in the residual model or focus on SBOM/CPE-range matching instead.
+4. Only start Phase 7 hosted/cloud deployment or the remaining Phase 8 scanner-adapter work if there is a concrete driver for it — both are explicitly optional for v0.1.
 
 ---
 

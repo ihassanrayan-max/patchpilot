@@ -1,12 +1,12 @@
 # PatchPilot vs EPSS - Benchmark Report
 
-_Generated: 2026-07-18T03:08:21.041872+00:00_
+_Generated: 2026-07-18T03:17:38.784502+00:00_
 
 **Status:** ok - metrics computed.
 
-Model artifact: `C:\Users\hassan\AppData\Local\Temp\patchpilot-ablate-30tbpkj9\.mlruns\run-877468c130-20260718T030819\model.pkl`  
+Model artifact: `C:\Users\hassan\Downloads\PatchPilot\.mlruns\run-825fb9cf6e-20260718T031726\model.pkl`  
 Model version: `lgbm@v0.1.0`  
-Trained at: `2026-07-18T03:08:19.851856+00:00`  
+Trained at: `2026-07-18T03:17:26.834613+00:00`  
 Features: 18
 
 ## Dataset windows
@@ -15,12 +15,12 @@ Features: 18
 | ----- | ----- |
 | closed rows (after censoring) | 220 |
 | closed publication range | 2023-06-01 .. 2024-01-06 |
-| train publication range | 2023-06-01 .. 2023-11-07 |
-| eval publication range | 2023-11-08 .. 2024-01-06 |
-| eval window length | 60 days |
-| eval rows | 60 |
-| eval positives | 4 |
-| eval positive rate | 0.0667 |
+| train publication range | 2023-06-01 .. 2023-10-08 |
+| eval publication range | 2023-10-09 .. 2024-01-06 |
+| eval window length | 90 days |
+| eval rows | 90 |
+| eval positives | 5 |
+| eval positive rate | 0.0556 |
 
 ## Right-censoring rule
 
@@ -28,10 +28,10 @@ Rows with `published_date > today_utc - 30 days` are excluded because their 30-d
 
 ## Headline metrics
 
-| Model | AUC-PR | AUC-ROC | P@10 | Brier | ECE |
+| Model | AUC-PR | AUC-ROC | P@100 | Brier | ECE |
 | ----- | ------ | ------- | ----- | ----- | --- |
-| PatchPilot | 1.0000 | 1.0000 | 0.4000 | 0.0044 | 0.0341 |
-| EPSS | 1.0000 | 1.0000 | 0.4000 | 0.0107 | 0.0990 |
+| PatchPilot | 1.0000 | 1.0000 | 0.0556 | 0.0038 | 0.0322 |
+| EPSS | 1.0000 | 1.0000 | 0.0556 | 0.0106 | 0.0983 |
 
 ## Notes
 

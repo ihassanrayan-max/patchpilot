@@ -1,24 +1,24 @@
 # PatchPilot Ablations
 
-_Generated: 2026-07-18T03:08:20.474694+00:00_
+_Generated: 2026-07-18T03:17:39.712755+00:00_
 
 **Status:** ok
 
 ## Holdout window
 
-- start: 2023-11-08
+- start: 2023-10-09
 - end: 2024-01-06
-- n rows: 60
-- n positives: 4
+- n rows: 90
+- n positives: 5
 
 ## Variants
 
-| Variant | AUC-PR | AUC-ROC | P@10 | Brier |
+| Variant | AUC-PR | AUC-ROC | P@100 | Brier |
 | ------- | ------ | ------- | ----- | ----- |
-| EPSS-only baseline (PIT) | 1.0000 | 1.0000 | 0.4000 | 0.0107 |
-| Full LightGBM (label target) | 0.1927 | 0.8326 | 0.1000 | 0.0574 |
-| LightGBM no-EPSS features | 0.0868 | 0.5000 | 0.1000 | 0.0624 |
-| EPSS-complement (residual blend) | 1.0000 | 1.0000 | 0.4000 | 0.0044 |
+| EPSS-only baseline (PIT) | 1.0000 | 1.0000 | 0.0556 | 0.0106 |
+| Full LightGBM (label target) | 0.0556 | 0.5000 | 0.0556 | 0.0525 |
+| LightGBM no-EPSS features | 0.0556 | 0.5000 | 0.0556 | 0.0525 |
+| EPSS-complement (residual blend) | 1.0000 | 1.0000 | 0.0556 | 0.0038 |
 
 ## Interpretation guide
 

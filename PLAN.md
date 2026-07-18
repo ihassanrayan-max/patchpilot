@@ -250,8 +250,22 @@ patchpilot ingest [--source nvd|epss|kev|all] [--since YYYY-MM-DD]
                   [--out-dir data/bronze] [--cache-dir DIR]
 patchpilot train  [--config config/settings.toml]
 patchpilot eval   [--report docs/benchmarks/REPORT.md] [--ablate]
+                  [--ablations-report docs/benchmarks/ABLATIONS.md]
+patchpilot rank   --sbom PATH [--api URL | --local]
+                  [--mlruns-dir DIR] [--silver-path PATH] [--bronze-nvd-dir DIR]
 patchpilot serve  [--host 0.0.0.0] [--port 8000]
 ```
+
+`rank` reads a CycloneDX JSON SBOM, resolves CVE candidates, scores them via
+`patchpilot.serve.scoring.score_cve_ids` (EPSS-complement blend; never
+reimplemented at the call site), and writes ranked JSON to stdout. Exactly
+one of `--api` (POST to a running PatchPilot API's `/rank`) or `--local`
+(score in-process, loading model/silver directly) selects the backend;
+`--local` is the default when neither is given, so the command works
+offline right after `uv sync` (EPSS-only fallback if nothing is trained
+yet). See [`docs/runbook.md`](docs/runbook.md#use-in-your-ci) for wiring
+`rank` (via `--api`) into another repo's CI through
+[`.github/actions/rank-sbom`](.github/actions/rank-sbom/action.yml).
 
 ---
 

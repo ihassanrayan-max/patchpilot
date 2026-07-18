@@ -1,8 +1,9 @@
 """PatchPilot: predict 30-day CVE exploitation and rank SBOM vulnerabilities.
 
-This package is the foundation laid in Phase 0. Every submodule exposes typed
-stubs that raise ``NotImplementedError("Phase N")`` where N is the phase that
-will implement the function. See ``PLAN.md`` for the full phase contract.
+Ranks CycloneDX SBOM vulnerabilities via an EPSS-complement blend (a
+LightGBM residual on top of point-in-time EPSS, falling back to EPSS alone
+when no model/features are available). See ``PLAN.md`` for the schema/API/
+CLI contract and ``PATCHPILOT_MASTER_ROADMAP.md`` for current project status.
 """
 
 from __future__ import annotations

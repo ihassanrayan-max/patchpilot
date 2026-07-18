@@ -1,8 +1,7 @@
 """Pydantic v2 request/response models for the FastAPI service.
 
-These classes are the public API contract documented in ``PLAN.md``. Phase 0
-defines them so client integrations can be written against stable types;
-Phase 4 wires them into FastAPI routes.
+These classes are the public API contract documented in ``PLAN.md`` and are
+wired into the FastAPI routes in ``patchpilot.serve.api``.
 """
 
 from __future__ import annotations

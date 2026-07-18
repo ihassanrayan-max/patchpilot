@@ -195,41 +195,6 @@ class _ModelState:
         """Minimal readiness for non-vacuous scoring: silver present (model optional; EPSS fallback)."""
         return self.silver_present
 
-    def score_cve_ids(self, cve_ids: list[str]) -> list[ScoreItem]:
-        """Score a batch of CVE ids and return :class:`ScoreItem` results."""
-        results: list[ScoreItem] = []
-        if self.model is not None and self.feature_names and self.feature_lookup:
-            zero_row = np.zeros(len(self.feature_names), dtype=np.float32)
-            rows = np.stack(
-                [self.feature_lookup.get(cve, zero_row) for cve in cve_ids]
-            )
-            probas = self.model.predict_proba(rows)
-            percentiles = self.baseline.predict_percentile(cve_ids)
-            for cve, proba, pct in zip(cve_ids, probas, percentiles, strict=True):
-                results.append(
-                    ScoreItem(
-                        cve_id=cve,
-                        probability=_clamp01(float(proba)) if cve in self.feature_lookup else 0.0,
-                        percentile=_clamp01(float(pct)),
-                        in_kev=bool(self.in_kev_lookup.get(cve, False)),
-                    )
-                )
-            return results
-
-        # Fallback: EPSS only.
-        scores = self.baseline.predict_proba(cve_ids)
-        percentiles = self.baseline.predict_percentile(cve_ids)
-        for cve, proba, pct in zip(cve_ids, scores, percentiles, strict=True):
-            results.append(
-                ScoreItem(
-                    cve_id=cve,
-                    probability=_clamp01(float(proba)),
-                    percentile=_clamp01(float(pct)),
-                    in_kev=bool(self.in_kev_lookup.get(cve, False)),
-                )
-            )
-        return results
-
 
 def _resolve_artifact_path(mlruns_dir: Path, info: dict[str, Any]) -> Path | None:
     """Resolve a model artifact path from ``latest.json`` contents.
@@ -251,15 +216,6 @@ def _resolve_artifact_path(mlruns_dir: Path, info: dict[str, Any]) -> Path | Non
         if fallback.exists():
             return fallback
     return None
-
-
-def _clamp01(x: float) -> float:
-    """Clamp ``x`` to [0, 1]."""
-    if x < 0.0:
-        return 0.0
-    if x > 1.0:
-        return 1.0
-    return x
 
 
 STATE: _ModelState = _ModelState()

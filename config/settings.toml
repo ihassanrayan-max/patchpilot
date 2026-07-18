@@ -1,8 +1,7 @@
 # PatchPilot configuration.
 #
-# Phase 0 defines the keys downstream phases will read. Concrete values that
-# require ingestion / training (e.g. feature lists, hyperparameters) are
-# placeholders and tightened in Phase 1/2.
+# Read by ingest/train/eval/serve. See PLAN.md and PATCHPILOT_MASTER_ROADMAP.md
+# for the schema/API/CLI contract and current project status.
 
 [paths]
 data_dir   = "data"
