@@ -128,12 +128,25 @@ def eval_cmd(
         Path,
         typer.Option(help="Markdown report output path."),
     ] = Path("docs/benchmarks/REPORT.md"),
+    ablate: Annotated[
+        bool,
+        typer.Option("--ablate", help="Also write docs/benchmarks/ABLATIONS.md."),
+    ] = False,
+    ablations_report: Annotated[
+        Path,
+        typer.Option(help="Ablations Markdown output path."),
+    ] = Path("docs/benchmarks/ABLATIONS.md"),
 ) -> None:
     """Evaluate PatchPilot vs EPSS and write the benchmark report."""
     from patchpilot.eval.compare_epss import write_report
 
     out = write_report(model_uri=model_uri, report_path=report)
     typer.echo(f"wrote report to {out}")
+    if ablate:
+        from patchpilot.eval.ablations import run_ablations
+
+        abl = run_ablations(report_path=ablations_report)
+        typer.echo(f"wrote ablations to {abl}")
 
 
 @app.command("serve")

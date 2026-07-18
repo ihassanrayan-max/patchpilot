@@ -308,7 +308,7 @@ def train_lgbm(config_path: Path) -> str:
     mlruns_dir = Path(paths.get("mlruns_dir", ".mlruns"))
     run_dir = mlruns_dir / run_id
     run_dir.mkdir(parents=True, exist_ok=True)
-    artifact_path = run_dir / "model.pkl"
+    artifact_path = (run_dir / "model.pkl").resolve()
     final_model.save(artifact_path)
 
     metadata: dict[str, Any] = {

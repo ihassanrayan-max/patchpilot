@@ -14,13 +14,28 @@
 2. Select the most recent rolling closed-window holdout that meets
    `[eval].min_holdout_rows` and `[eval].min_holdout_positives`
    (default: last 90 days, at least 50 rows and 1 positive).
-3. Train on all older right-censored rows; score both PatchPilot and EPSS on
-   the same holdout slice.
+3. Train on older right-censored rows (when enough history exists);
+   score both PatchPilot and EPSS on the same holdout slice.
 4. `patchpilot.eval.compare_epss.write_report` writes
    `docs/benchmarks/REPORT.md` and syncs the README benchmark table.
+   When metrics cannot be computed, both files show `n/a` with a reason —
+   never fabricated numbers.
 
-## CI gate
+## Point-in-time scoring for the challenger
 
-`.github/workflows/eval-vs-epss.yml` runs the report and fails if PatchPilot
-underperforms EPSS on AUC-PR by more than the configured margin (Phase 3
-sets this margin).
+PatchPilot holdout scores use the same point-in-time feature assembly as
+training (`assemble_training_frame`). The EPSS baseline uses the EPSS
+columns on silver (`EpssBaseline.from_silver`) for the comparison protocol.
+
+## CI gates
+
+- **PR CI** (`.github/workflows/ci.yml`): unit tests + fixture e2e
+  (`make test-e2e`). No live NVD required.
+- **Weekly live eval** (`.github/workflows/eval-vs-epss.yml`): ingest /
+  train / eval on live feeds; fails if the report is unavailable or if
+  EPSS AUC-PR exceeds PatchPilot by more than `[eval].auc_pr_margin`.
+
+## Ablations
+
+`make ablate` writes `docs/benchmarks/ABLATIONS.md` comparing full /
+no-EPSS / EPSS-only variants on the same holdout.

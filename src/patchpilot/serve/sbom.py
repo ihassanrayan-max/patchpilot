@@ -1,24 +1,22 @@
 """CycloneDX SBOM parsing helpers and CVE candidate resolution.
 
-The parser is intentionally tolerant of CycloneDX 1.4/1.5 shapes
-(``bomFormat`` is required, ``specVersion`` is required). We resolve a
-component to candidate CVEs in two ways, used in order:
+Resolution order (highest confidence first):
 
 1. Direct ``vulnerabilities[].id`` references attached to the component
-   (CycloneDX inline VEX style).
-2. Substring matches of the component's ``name`` against the
-   ``vendors``/``products`` columns of the bronze NVD frame. We honour
-   the version equality when both sides expose it; otherwise we return
-   every CVE that touches the product to be safe (and let ranking
-   prioritise the dangerous ones).
+   (CycloneDX inline VEX style) → ``match_method=inline_vex``.
+2. Product + version equality against bronze NVD ``products``/``versions``
+   → ``match_method=product_version_exact``.
+3. Product-name-only match when version is missing or NVD versions are empty
+   → ``match_method=product_name`` (higher false-positive risk).
 
-This is the smallest correct mapping we can ship without a CPE matcher;
-PLAN.md flags richer CPE matching as Phase 6 work.
+This is intentionally conservative: version *ranges* from CPE
+``versionStartIncluding`` / ``versionEndExcluding`` are not yet modeled.
 """
 
 from __future__ import annotations
 
 import re
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, cast
 
@@ -27,6 +25,17 @@ import polars as pl
 from patchpilot.ingest.nvd import load_nvd_bronze
 
 _PURL_RE = re.compile(r"^pkg:(?P<type>[^/]+)/(?P<name>[^@?]+)(?:@(?P<version>[^?]+))?")
+
+
+@dataclass(frozen=True)
+class ComponentCveMatch:
+    """One component→CVE association with explicit match metadata."""
+
+    purl: str
+    cve_id: str
+    match_method: str
+    match_confidence: str
+    match_reason: str
 
 
 def parse_cyclonedx(sbom: dict[str, Any]) -> list[dict[str, Any]]:
@@ -125,52 +134,104 @@ def cves_for_components(
     components: list[dict[str, Any]],
     *,
     nvd_bronze_dir: Path | None = None,
-) -> list[tuple[str, str]]:
-    """Resolve components to ``(purl, cve_id)`` candidate pairs.
+) -> list[ComponentCveMatch]:
+    """Resolve components to :class:`ComponentCveMatch` candidates."""
+    matches: list[ComponentCveMatch] = []
+    seen: set[tuple[str, str]] = set()
 
-    Inline-VEX CVEs attached to the component are always emitted. Beyond
-    that, when ``nvd_bronze_dir`` is provided we look up by lower-cased
-    product/name; otherwise only inline-VEX pairs are returned.
-    """
-    pairs: list[tuple[str, str]] = []
     for component in components:
-        purl = component.get("purl") or component.get("name") or ""
+        purl = str(component.get("purl") or component.get("name") or "")
         for cve in component.get("cve_ids") or []:
-            pairs.append((str(purl), str(cve)))
-
-    if nvd_bronze_dir is not None:
-        try:
-            nvd = load_nvd_bronze(Path(nvd_bronze_dir))
-        except FileNotFoundError:
-            return pairs
-        product_index = _build_product_index(nvd)
-        for component in components:
-            purl = component.get("purl") or ""
-            parsed = parse_purl(str(purl))
-            name = (parsed.get("name") or component.get("name") or "").lower()
-            if not name:
+            key = (purl, str(cve))
+            if key in seen:
                 continue
-            for cve in product_index.get(name, []):
-                pair = (str(purl), cve)
-                if pair not in pairs:
-                    pairs.append(pair)
+            seen.add(key)
+            matches.append(
+                ComponentCveMatch(
+                    purl=purl,
+                    cve_id=str(cve),
+                    match_method="inline_vex",
+                    match_confidence="high",
+                    match_reason="CycloneDX vulnerabilities[].id attached via affects.ref",
+                )
+            )
 
-    return pairs
+    if nvd_bronze_dir is None:
+        return matches
+
+    try:
+        nvd = load_nvd_bronze(Path(nvd_bronze_dir))
+    except FileNotFoundError:
+        return matches
+
+    product_index = _build_product_index(nvd)
+    for component in components:
+        purl = str(component.get("purl") or "")
+        parsed = parse_purl(purl)
+        name = (parsed.get("name") or component.get("name") or "").lower()
+        version = parsed.get("version") or component.get("version")
+        version_s = str(version).lower() if version else None
+        if not name:
+            continue
+        for entry in product_index.get(name, []):
+            cve_id = entry["cve_id"]
+            key = (purl, cve_id)
+            if key in seen:
+                continue
+            versions = entry.get("versions") or []
+            versions_l = {v.lower() for v in versions}
+            if version_s and versions_l and version_s in versions_l:
+                method = "product_version_exact"
+                confidence = "medium"
+                reason = (
+                    f"product '{name}' with version '{version_s}' matched NVD CPE versions"
+                )
+            elif version_s and versions_l and version_s not in versions_l:
+                # Version present on both sides but no equality → skip (reduce FP).
+                continue
+            else:
+                method = "product_name"
+                confidence = "low"
+                reason = (
+                    f"product '{name}' matched NVD products without version equality "
+                    "(higher false-positive risk)"
+                )
+            seen.add(key)
+            matches.append(
+                ComponentCveMatch(
+                    purl=purl,
+                    cve_id=cve_id,
+                    match_method=method,
+                    match_confidence=confidence,
+                    match_reason=reason,
+                )
+            )
+
+    return matches
 
 
-def _build_product_index(nvd: pl.DataFrame) -> dict[str, list[str]]:
-    """Build a lowercased product/vendor -> [cve_id...] index from bronze NVD."""
+def _build_product_index(nvd: pl.DataFrame) -> dict[str, list[dict[str, Any]]]:
+    """Build lowercased product → [{cve_id, versions}] index from bronze NVD."""
     if "products" not in nvd.columns:
         return {}
+    has_versions = "versions" in nvd.columns
+    select_cols = ["cve_id", "products"] + (["versions"] if has_versions else [])
     exploded = (
-        nvd.select(["cve_id", "products"])
+        nvd.select(select_cols)
         .with_columns(pl.col("products").fill_null([]))
         .explode("products")
         .rename({"products": "product"})
         .filter(pl.col("product").is_not_null())
         .with_columns(pl.col("product").str.to_lowercase())
     )
-    index: dict[str, list[str]] = {}
+    index: dict[str, list[dict[str, Any]]] = {}
     for row in exploded.iter_rows(named=True):
-        index.setdefault(cast(str, row["product"]), []).append(cast(str, row["cve_id"]))
+        product = cast(str, row["product"])
+        versions_raw = row.get("versions") if has_versions else None
+        versions: list[str] = []
+        if isinstance(versions_raw, list):
+            versions = [str(v) for v in versions_raw if v is not None]
+        index.setdefault(product, []).append(
+            {"cve_id": cast(str, row["cve_id"]), "versions": versions}
+        )
     return index

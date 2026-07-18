@@ -2,6 +2,11 @@
 
 from __future__ import annotations
 
+from datetime import date
+from pathlib import Path
+
+import polars as pl
+import pyarrow.parquet as pq
 import pytest
 
 from patchpilot.serve.sbom import (
@@ -9,6 +14,7 @@ from patchpilot.serve.sbom import (
     parse_cyclonedx,
     parse_purl,
 )
+from patchpilot.validate.schemas import nvd_bronze_schema
 
 
 def test_parse_cyclonedx_accepts_basic_15_sbom() -> None:
@@ -81,7 +87,7 @@ def test_parse_purl_returns_none_for_invalid_string() -> None:
 
 
 def test_cves_for_components_returns_inline_vex_pairs_without_bronze() -> None:
-    """Without a bronze NVD dir we still surface inline-VEX (purl, cve) pairs."""
+    """Without a bronze NVD dir we still surface inline-VEX matches."""
     components = parse_cyclonedx(
         {
             "bomFormat": "CycloneDX",
@@ -93,4 +99,96 @@ def test_cves_for_components_returns_inline_vex_pairs_without_bronze() -> None:
         }
     )
     pairs = cves_for_components(components)
-    assert pairs == [("pkg:pypi/foo@1.0", "CVE-2024-0001")]
+    assert len(pairs) == 1
+    assert pairs[0].purl == "pkg:pypi/foo@1.0"
+    assert pairs[0].cve_id == "CVE-2024-0001"
+    assert pairs[0].match_method == "inline_vex"
+    assert pairs[0].match_confidence == "high"
+
+
+def test_cves_for_components_version_exact_match(tmp_path: Path) -> None:
+    """Product+version equality yields medium-confidence product_version_exact."""
+    nvd_dir = tmp_path / "nvd"
+    nvd_dir.mkdir()
+    nvd = pl.DataFrame(
+        {
+            "cve_id": ["CVE-2024-1111", "CVE-2024-2222"],
+            "published_date": [date(2024, 1, 1), date(2024, 1, 2)],
+            "last_modified_date": [date(2024, 1, 2), date(2024, 1, 3)],
+            "cvss_v3_base_score": [9.8, 5.0],
+            "cvss_v3_severity": ["CRITICAL", "MEDIUM"],
+            "cvss_v3_vector": ["AV:N", "AV:N"],
+            "cwe_ids": [["CWE-79"], ["CWE-22"]],
+            "vendor_count": [1, 1],
+            "product_count": [1, 1],
+            "description": ["a", "b"],
+            "description_len": [1, 1],
+            "ref_has_exploit": [False, False],
+            "ref_has_patch": [True, True],
+            "vendors": [["openssl"], ["openssl"]],
+            "products": [["openssl"], ["openssl"]],
+            "versions": [["3.0.0"], ["3.0.1"]],
+        }
+    )
+    pq.write_table(nvd.to_arrow().cast(nvd_bronze_schema()), nvd_dir / "2024-01-01.parquet")
+
+    components = parse_cyclonedx(
+        {
+            "bomFormat": "CycloneDX",
+            "specVersion": "1.5",
+            "components": [
+                {
+                    "type": "library",
+                    "name": "openssl",
+                    "version": "3.0.0",
+                    "purl": "pkg:generic/openssl@3.0.0",
+                }
+            ],
+        }
+    )
+    matches = cves_for_components(components, nvd_bronze_dir=nvd_dir)
+    assert len(matches) == 1
+    assert matches[0].cve_id == "CVE-2024-1111"
+    assert matches[0].match_method == "product_version_exact"
+    assert matches[0].match_confidence == "medium"
+
+
+def test_cves_for_components_skips_version_mismatch(tmp_path: Path) -> None:
+    """When both sides have versions and they disagree, do not emit the CVE."""
+    nvd_dir = tmp_path / "nvd"
+    nvd_dir.mkdir()
+    nvd = pl.DataFrame(
+        {
+            "cve_id": ["CVE-2024-3333"],
+            "published_date": [date(2024, 1, 1)],
+            "last_modified_date": [date(2024, 1, 2)],
+            "cvss_v3_base_score": [9.8],
+            "cvss_v3_severity": ["CRITICAL"],
+            "cvss_v3_vector": ["AV:N"],
+            "cwe_ids": [["CWE-79"]],
+            "vendor_count": [1],
+            "product_count": [1],
+            "description": ["a"],
+            "description_len": [1],
+            "ref_has_exploit": [False],
+            "ref_has_patch": [True],
+            "vendors": [["openssl"]],
+            "products": [["openssl"]],
+            "versions": [["1.1.1"]],
+        }
+    )
+    pq.write_table(nvd.to_arrow().cast(nvd_bronze_schema()), nvd_dir / "2024-01-01.parquet")
+    components = parse_cyclonedx(
+        {
+            "bomFormat": "CycloneDX",
+            "specVersion": "1.5",
+            "components": [
+                {
+                    "name": "openssl",
+                    "version": "3.0.0",
+                    "purl": "pkg:generic/openssl@3.0.0",
+                }
+            ],
+        }
+    )
+    assert cves_for_components(components, nvd_bronze_dir=nvd_dir) == []

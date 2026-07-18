@@ -10,6 +10,9 @@ services:
     environment:
       MLFLOW_TRACKING_URI: file:///app/.mlruns
       PATCHPILOT_DATA_DIR: /app/data
+      PATCHPILOT_MLRUNS_DIR: /app/.mlruns
+      PATCHPILOT_SILVER_PATH: /app/data/silver/cve_master.parquet
+      PATCHPILOT_BRONZE_NVD_DIR: /app/data/bronze/nvd
     volumes:
       - ./data:/app/data
       - ./.mlruns:/app/.mlruns
@@ -28,6 +31,8 @@ services:
     environment:
       MLFLOW_TRACKING_URI: file:///app/.mlruns
       PATCHPILOT_DATA_DIR: /app/data
+      PATCHPILOT_MLRUNS_DIR: /app/.mlruns
+      PATCHPILOT_SILVER_PATH: /app/data/silver/cve_master.parquet
     volumes:
       - ./data:/app/data
       - ./.mlruns:/app/.mlruns
@@ -41,7 +46,7 @@ services:
     ports:
       - "8501:8501"
     environment:
-      PATCHPILOT_API_URL: http://api:8000
+      PATCHPILOT_API: http://api:8000
     volumes:
       - ./data:/app/data
       - ./.mlruns:/app/.mlruns

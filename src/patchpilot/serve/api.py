@@ -1,6 +1,7 @@
-"""FastAPI application exposing ``/score``, ``/rank``, ``/model/info``, ``/healthz``.
+"""FastAPI application exposing ``/healthz``, ``/model/info``, ``/score``, ``/rank``.
 
 Loading strategy:
+* Paths come from constructor args, else env overrides, else defaults.
 * If a trained model artifact exists under ``.mlruns/latest.json`` we load
   it eagerly at process start.
 * If a silver parquet exists we load its EPSS columns into the
@@ -12,6 +13,7 @@ Loading strategy:
 from __future__ import annotations
 
 import json
+import os
 import threading
 from datetime import UTC, datetime
 from pathlib import Path
@@ -23,7 +25,7 @@ from fastapi import FastAPI, HTTPException
 
 from patchpilot.models.baseline_epss import EpssBaseline
 from patchpilot.models.lgbm import LgbmModel
-from patchpilot.serve.sbom import cves_for_components, parse_cyclonedx
+from patchpilot.serve.sbom import ComponentCveMatch, cves_for_components, parse_cyclonedx
 from patchpilot.serve.schemas import (
     HealthResponse,
     ModelInfoResponse,
@@ -35,9 +37,11 @@ from patchpilot.serve.schemas import (
     ScoreResponse,
 )
 
-DEFAULT_MLRUNS = Path(".mlruns")
-DEFAULT_SILVER = Path("data/silver/cve_master.parquet")
-DEFAULT_BRONZE_NVD = Path("data/bronze/nvd")
+DEFAULT_MLRUNS = Path(os.environ.get("PATCHPILOT_MLRUNS_DIR", ".mlruns"))
+DEFAULT_SILVER = Path(
+    os.environ.get("PATCHPILOT_SILVER_PATH", "data/silver/cve_master.parquet")
+)
+DEFAULT_BRONZE_NVD = Path(os.environ.get("PATCHPILOT_BRONZE_NVD_DIR", "data/bronze/nvd"))
 
 
 class _ModelState:
@@ -56,14 +60,24 @@ class _ModelState:
         self.cvss_lookup: dict[str, float | None] = {}
         self.silver_path: Path = DEFAULT_SILVER
         self.mlruns_dir: Path = DEFAULT_MLRUNS
+        self.bronze_nvd_dir: Path = DEFAULT_BRONZE_NVD
 
-    def load(self, *, mlruns_dir: Path = DEFAULT_MLRUNS, silver_path: Path = DEFAULT_SILVER) -> None:
-        """Idempotent model + silver-cache load."""
+    def load(
+        self,
+        *,
+        mlruns_dir: Path | None = None,
+        silver_path: Path | None = None,
+        bronze_nvd_dir: Path | None = None,
+    ) -> None:
+        """Idempotent model + silver-cache load with optional path overrides."""
         with self._lock:
-            self.mlruns_dir = mlruns_dir
-            self.silver_path = silver_path
-            self._load_silver(silver_path)
-            self._load_model(mlruns_dir)
+            self.mlruns_dir = Path(mlruns_dir) if mlruns_dir is not None else DEFAULT_MLRUNS
+            self.silver_path = Path(silver_path) if silver_path is not None else DEFAULT_SILVER
+            self.bronze_nvd_dir = (
+                Path(bronze_nvd_dir) if bronze_nvd_dir is not None else DEFAULT_BRONZE_NVD
+            )
+            self._load_silver(self.silver_path)
+            self._load_model(self.mlruns_dir)
 
     def _load_silver(self, silver_path: Path) -> None:
         """Populate the per-CVE lookups used by ``/score`` and ``/rank``."""
@@ -116,15 +130,22 @@ class _ModelState:
             self.model = None
             self.metadata = {}
             self.feature_names = []
+            self.feature_lookup = {}
             return
         info = cast(dict[str, Any], json.loads(pointer.read_text()))
-        artifact = Path(info["artifact"])
-        if not artifact.exists():
+        artifact = _resolve_artifact_path(mlruns_dir, info)
+        if artifact is None:
+            self.model = None
+            self.metadata = {}
+            self.feature_names = []
+            self.feature_lookup = {}
             return
         self.model = LgbmModel.load(artifact)
         meta_path = artifact.parent / "metadata.json"
         if meta_path.exists():
             self.metadata = cast(dict[str, Any], json.loads(meta_path.read_text()))
+        else:
+            self.metadata = {}
         self.feature_names = self.metadata.get("feature_names") or []
         self._build_feature_lookup()
 
@@ -136,7 +157,11 @@ class _ModelState:
         from patchpilot.train.train import assemble_scoring_frame
 
         try:
-            frame = assemble_scoring_frame(self.silver_path)
+            bronze_dir = self.bronze_nvd_dir.parent if self.bronze_nvd_dir.name == "nvd" else None
+            frame = assemble_scoring_frame(
+                self.silver_path,
+                bronze_dir=bronze_dir,
+            )
         except Exception:  # noqa: BLE001
             self.feature_lookup = {}
             return
@@ -187,6 +212,28 @@ class _ModelState:
                 )
             )
         return results
+
+
+def _resolve_artifact_path(mlruns_dir: Path, info: dict[str, Any]) -> Path | None:
+    """Resolve a model artifact path from ``latest.json`` contents.
+
+    Training may persist a cwd-relative ``artifact`` string. Prefer that path
+    when it exists; otherwise fall back to ``mlruns_dir/<run_id>/model.pkl``.
+    """
+    raw = info.get("artifact")
+    if isinstance(raw, str) and raw:
+        candidate = Path(raw)
+        if candidate.exists():
+            return candidate
+        nested = mlruns_dir / candidate.name
+        if nested.exists():
+            return nested
+    run_id = info.get("run_id")
+    if isinstance(run_id, str) and run_id:
+        fallback = mlruns_dir / run_id / "model.pkl"
+        if fallback.exists():
+            return fallback
+    return None
 
 
 def _clamp01(x: float) -> float:
@@ -253,7 +300,7 @@ def rank(request: RankRequest) -> RankResponse:
     except ValueError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
 
-    pairs = cves_for_components(components, nvd_bronze_dir=DEFAULT_BRONZE_NVD)
+    pairs = cves_for_components(components, nvd_bronze_dir=STATE.bronze_nvd_dir)
     if not pairs:
         return RankResponse(
             model_version=STATE.model_version or "unavailable",
@@ -261,21 +308,30 @@ def rank(request: RankRequest) -> RankResponse:
             items=[],
         )
 
-    unique_cves = list({cve for _purl, cve in pairs})
+    unique_cves = list({m.cve_id for m in pairs})
     scored = {item.cve_id: item for item in STATE.score_cve_ids(unique_cves)}
 
-    rows: list[tuple[float, float, str, str, ScoreItem]] = []
-    for purl, cve in pairs:
-        item = scored.get(cve)
+    rows: list[tuple[float, float, str, str, ScoreItem, ComponentCveMatch]] = []
+    for match in pairs:
+        item = scored.get(match.cve_id)
         if item is None:
             continue
-        cvss = STATE.cvss_lookup.get(cve)
-        rows.append((item.probability, cvss if cvss is not None else 0.0, cve, purl, item))
+        cvss = STATE.cvss_lookup.get(match.cve_id)
+        rows.append(
+            (
+                item.probability,
+                cvss if cvss is not None else 0.0,
+                match.cve_id,
+                match.purl,
+                item,
+                match,
+            )
+        )
 
     rows.sort(key=lambda r: (-r[0], -r[1], r[2]))
 
     items: list[RankItem] = []
-    for idx, (_proba, _cvss, cve, purl, item) in enumerate(rows, start=1):
+    for idx, (_proba, _cvss, cve, purl, item, match) in enumerate(rows, start=1):
         items.append(
             RankItem(
                 rank=idx,
@@ -285,6 +341,9 @@ def rank(request: RankRequest) -> RankResponse:
                 percentile=item.percentile,
                 cvss_v3_base_score=STATE.cvss_lookup.get(cve),
                 in_kev=item.in_kev,
+                match_method=match.match_method,
+                match_confidence=match.match_confidence,
+                match_reason=match.match_reason,
             )
         )
 

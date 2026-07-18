@@ -1,20 +1,21 @@
-# PatchPilot — Build Plan
+# PatchPilot — Build Plan (Contract)
 
-This document is the contract that downstream phase agents follow verbatim.
-Every later phase must respect the schema, API, and CLI contracts below.
+This document is the **schema / API / CLI contract**.
+For the living execution roadmap, status ledger, and agent handoff rules, see
+[`PATCHPILOT_MASTER_ROADMAP.md`](PATCHPILOT_MASTER_ROADMAP.md).
+
+Every later phase must respect the contracts below.
 
 ---
 
 ## 1. Phases
 
-Each phase has exactly one acceptance command (the Makefile target). A phase
-is "green" only when that command succeeds in a fresh clone.
+Each phase has an acceptance command. A phase is "green" only when that
+command succeeds (fixture path preferred for CI).
 
 ### Phase 1 — Ingestion + silver lake + label
 
-**Acceptance:** `make ingest` produces a silver Parquet at
-`data/silver/cve_master.parquet` matching the schema contract below, and
-the label test passes:
+**Acceptance:**
 
 ```
 make ingest
@@ -23,76 +24,80 @@ uv run pytest -q tests/test_label_construction.py
 
 Scope:
 - `patchpilot.ingest.{nvd,epss,kev}` — download to `data/bronze/**`.
-- `patchpilot.validate.{schemas,expectations}` — schema + GE suite.
+- `patchpilot.validate.{schemas,expectations}` — schema + value checks.
 - Silver join lands the contract below.
 - Label `exploited_30d` built from KEV.
-- `flows.daily_ingest.daily_ingest_flow` is runnable.
+- `patchpilot.flows.daily_ingest.daily_ingest_flow` is runnable.
 
-### Phase 2 — Features + train + MLflow
+### Phase 2 — Features + train + local registry
 
-**Acceptance:** `make train` logs an MLflow run under `.mlruns/`, and a
-deterministic re-run produces an identical (params, metrics) tuple:
+**Acceptance:**
 
 ```
 make train
-uv run pytest -q tests/test_temporal_cv.py
+uv run pytest -q tests/test_temporal_cv.py tests/test_feature_leakage.py
 ```
 
 Scope:
-- `patchpilot.features.{tabular,temporal,graph}` materializes gold Parquet.
+- `patchpilot.features.{tabular,temporal,graph,point_in_time}` assemble features.
+- Training/eval use **point-in-time** EPSS and per-row temporal/graph anchors.
+- Current KEV membership is **not** a model feature.
 - `patchpilot.train.temporal_cv` enforces embargo ≥ 30 days.
 - `patchpilot.models.lgbm.LgbmModel` trained + calibrated (isotonic).
-- Run is logged to MLflow with config, metrics, model artifact.
+- Artifacts persist under `.mlruns/<run_id>/` with `latest.json` pointer
+  (local file registry; full MLflow tracking server is optional, not required).
 
 ### Phase 3 — Evaluation report (PatchPilot vs EPSS)
 
-**Acceptance:** `make eval` writes `docs/benchmarks/REPORT.md` with **real
-numeric** AUC-PR, AUC-ROC, P@K, Brier, and ECE for both PatchPilot and EPSS:
+**Acceptance:**
 
 ```
 make eval
-test -s docs/benchmarks/REPORT.md
+uv run pytest -q tests/test_eval_holdout.py tests/test_eval_metrics.py
 ```
 
 Scope:
-- `patchpilot.eval.metrics` returns real numbers (no NaN).
-- `patchpilot.eval.compare_epss.write_report` populates the table in
-  `docs/benchmarks/REPORT.md` between the markers; no placeholder dashes.
+- Rolling closed-window holdout via `select_eval_holdout`
+  (config: `[eval].holdout_days`, `min_holdout_rows`, `min_holdout_positives`).
+- `patchpilot.eval.compare_epss.write_report` writes
+  `docs/benchmarks/REPORT.md` and syncs the README table
+  (or writes `n/a` when metrics are unavailable — never fabricate).
 
 ### Phase 4 — Serving + demo
 
 **Acceptance:**
 
 ```
+uv run pytest -q tests/test_api.py tests/test_sbom_parser.py
 make serve &
 curl -X POST http://localhost:8000/score \
      -H 'content-type: application/json' \
-     -d '{"cve_ids":["CVE-2024-1234"]}'        # 200 with real JSON
+     -d '{"cve_ids":["CVE-2024-1234"]}'
 curl -X POST http://localhost:8000/rank \
      -H 'content-type: application/json' \
-     -d @sample_sbom.json                       # 200 with real JSON
-make demo                                       # Streamlit on :8501 loads
+     -d @sample_sbom.json
 ```
 
 Scope:
-- `patchpilot.serve.api` loads the latest MLflow model.
-- `patchpilot.serve.sbom.parse_cyclonedx` + `cves_for_components`.
+- `patchpilot.serve.api` loads the latest local registry model.
+- `/rank` includes match metadata (`match_method`, `match_confidence`, `match_reason`).
 - Streamlit demo uploads SBOM and renders ranked list.
-- `tests/test_sbom_parser.py` passes.
 
 ### Phase 5 — End-to-end + CI
 
-**Acceptance, on a fresh clone:**
+**Acceptance:**
 
 ```
-make up && make ingest && make train && make eval
+make test-e2e
 ```
 
-succeeds, and `.github/workflows/ci.yml` is green on `main`.
+and `.github/workflows/ci.yml` is green on `main` (fixture path; no live NVD required).
+
+Weekly live ingest/eval remains in `.github/workflows/eval-vs-epss.yml`.
 
 ---
 
-## 2. Stretch list (Phase 6) — only after 1–5 green
+## 2. Stretch list — only after Phase 5 green
 
 - Conformal prediction intervals on probabilities.
 - SHAP explanations served alongside `/score` responses.
@@ -100,24 +105,24 @@ succeeds, and `.github/workflows/ci.yml` is green on `main`.
 - ExploitDB ingestion as a second positive-label signal.
 - GHSA ingestion as a feature input.
 - DistilBERT embeddings on CVE descriptions.
-- Daily retrain flow via Prefect.
+- Daily retrain flow via Prefect (optional; plain CLI already works).
+- GitHub Action / scanner integrations (see master roadmap Phase 8).
 
 ---
 
-## 3. Do-Not-Build list (out of scope for this project)
+## 3. Do-Not-Build list (until master roadmap allows)
 
 - Next.js or any non-Streamlit frontend.
-- Grafana dashboards.
-- Prometheus exporters.
-- OpenTelemetry instrumentation.
-- Postgres MLflow backend (we use the local file backend at `.mlruns`).
-- Mocked or fabricated CSVs committed to the repo.
+- Grafana dashboards / Prometheus / OpenTelemetry as vanity ops.
+- Postgres MLflow backend (local `.mlruns` file registry is supported).
+- Fabricated benchmark numbers committed as “real” results.
+- Claiming PatchPilot beats EPSS without REPORT.md evidence.
 
 ---
 
 ## 4. Schema contract — `data/silver/cve_master.parquet`
 
-This is the only authoritative schema. Every later phase consumes it.
+This is the only authoritative silver schema. Every later phase consumes it.
 
 | # | column | dtype | nullable | constraint |
 |---|--------|-------|----------|------------|
@@ -153,12 +158,26 @@ Rows with `published_date > today_utc - 30 days` are **excluded** from
 training and evaluation, because their 30-day exploitation window has not
 yet closed. They are still included in scoring/serving inputs.
 
+### Rolling holdout (eval)
+
+After right-censoring, evaluation uses the most recent closed window that
+meets `[eval].min_holdout_rows` and `[eval].min_holdout_positives`
+(default window length `[eval].holdout_days`). Training excludes that window
+when enough pre-holdout rows exist.
+
+### Point-in-time feature rules
+
+- Training/eval EPSS features use the latest EPSS snapshot on or before
+  each CVE's `published_date`.
+- Temporal and graph popularity features use `as_of = published_date` per row.
+- `in_kev` may appear in API responses for display; it is **not** a training feature.
+- Live scoring may use current EPSS via `assemble_scoring_frame`.
+
 ---
 
 ## 5. API contract — FastAPI service
 
-Pydantic v2 models live in `src/patchpilot/serve/schemas.py`. The
-contract below is binding.
+Pydantic v2 models live in `src/patchpilot/serve/schemas.py`.
 
 ### `POST /score`
 
@@ -187,40 +206,32 @@ Response (200):
 }
 ```
 
-`probability ∈ [0,1]`, `percentile ∈ [0,1]`. Unknown CVE ids → return
-`probability=0.0, percentile=0.0, in_kev=false`.
+Unknown CVE ids → `probability=0.0, percentile=0.0, in_kev=false`.
+If no model is loaded, `/score` falls back to EPSS-only probabilities when silver data exists.
 
 ### `POST /rank`
 
-Request: CycloneDX 1.5 JSON SBOM under key `sbom`.
+Request: CycloneDX JSON SBOM under key `sbom`.
 
-```json
-{ "sbom": { "bomFormat": "CycloneDX", "specVersion": "1.5", "components": [...] } }
-```
-
-Response (200):
+Response items include ranking fields plus match metadata:
 
 ```json
 {
-  "model_version": "lgbm@v0.1.0",
-  "ranked_at": "2026-05-16T00:00:00Z",
-  "items": [
-    {
-      "rank": 1,
-      "cve_id": "CVE-2024-1234",
-      "purl": "pkg:pypi/foo@1.2.3",
-      "probability": 0.87,
-      "percentile": 0.991,
-      "cvss_v3_base_score": 9.8,
-      "in_kev": true
-    }
-  ]
+  "rank": 1,
+  "cve_id": "CVE-2024-1234",
+  "purl": "pkg:pypi/foo@1.2.3",
+  "probability": 0.87,
+  "percentile": 0.991,
+  "cvss_v3_base_score": 9.8,
+  "in_kev": true,
+  "match_method": "inline_vex",
+  "match_confidence": "high",
+  "match_reason": "CycloneDX vulnerabilities[].id attached via affects.ref"
 }
 ```
 
-Items are sorted by `probability` descending; ties broken by
-`cvss_v3_base_score` descending, then `cve_id` ascending. `rank` is dense
-1-based. Non-CycloneDX inputs → HTTP 422.
+`match_method` is one of: `inline_vex`, `product_version_exact`, `product_name`, `unknown`.
+Non-CycloneDX inputs → HTTP 422.
 
 ### `GET /healthz`
 
@@ -228,7 +239,7 @@ Items are sorted by `probability` descending; ties broken by
 { "status": "ok", "model_version": "lgbm@v0.1.0" }
 ```
 
-`model_version` is `null` until Phase 4 loads a real model.
+`model_version` is `null` when no model is loaded (degraded mode).
 
 ---
 
@@ -236,21 +247,30 @@ Items are sorted by `probability` descending; ties broken by
 
 ```
 patchpilot ingest [--source nvd|epss|kev|all] [--since YYYY-MM-DD]
-                  [--out-dir data/bronze]                                 # Phase 1
-patchpilot train  [--config config/settings.toml]                        # Phase 2
-patchpilot eval   [--model-uri runs:/<id>/model]
-                  [--report docs/benchmarks/REPORT.md]                   # Phase 3
-patchpilot serve  [--host 0.0.0.0] [--port 8000]                         # Phase 4 (Phase 0 wires uvicorn)
+                  [--out-dir data/bronze] [--cache-dir DIR]
+patchpilot train  [--config config/settings.toml]
+patchpilot eval   [--report docs/benchmarks/REPORT.md] [--ablate]
+patchpilot serve  [--host 0.0.0.0] [--port 8000]
 ```
-
-All commands exit with code 2 and a "`Phase N not yet implemented`" stderr
-message until their implementing phase lands. The exception is `serve`,
-which starts uvicorn immediately so the API container is exercisable in
-Phase 0.
 
 ---
 
-## 7. Phase 0 acceptance (already verified in this run)
+## 7. Local registry contract
+
+Supported artifact layout:
+
+```
+.mlruns/<run_id>/model.pkl
+.mlruns/<run_id>/metadata.json
+.mlruns/latest.json
+```
+
+`latest.json` contains `{run_id, artifact, model_version}`.
+Serving and eval load through this pointer. A hosted MLflow server is not required.
+
+---
+
+## 8. Phase 0 acceptance
 
 ```
 pip install uv && uv python install 3.11
@@ -260,5 +280,3 @@ uv run mypy src/patchpilot
 uv run pytest -q
 docker compose build
 ```
-
-All six must pass before any Phase 1 work begins.

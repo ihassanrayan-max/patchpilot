@@ -70,6 +70,18 @@ class RankItem(BaseModel):
     percentile: float = Field(..., ge=0.0, le=1.0)
     cvss_v3_base_score: float | None = Field(default=None, ge=0.0, le=10.0)
     in_kev: bool
+    match_method: str = Field(
+        default="unknown",
+        description="How the CVE was associated: inline_vex|product_version_exact|product_name|unknown",
+    )
+    match_confidence: str = Field(
+        default="low",
+        description="high|medium|low — confidence of the component→CVE association",
+    )
+    match_reason: str = Field(
+        default="",
+        description="Human-readable explanation of the match",
+    )
 
 
 class RankResponse(BaseModel):

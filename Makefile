@@ -1,4 +1,4 @@
-.PHONY: setup lint typecheck test ingest train eval serve demo up down
+.PHONY: setup lint typecheck test test-e2e ingest train eval ablate serve demo up down
 
 setup:
 	uv sync
@@ -12,6 +12,9 @@ typecheck:
 test:
 	uv run pytest -q
 
+test-e2e:
+	uv run pytest -q tests/test_e2e_fixtures.py tests/test_api.py
+
 ingest:
 	uv run patchpilot ingest --source all
 
@@ -20,6 +23,9 @@ train:
 
 eval:
 	uv run patchpilot eval --report docs/benchmarks/REPORT.md
+
+ablate:
+	uv run patchpilot eval --report docs/benchmarks/REPORT.md --ablate
 
 serve:
 	uv run patchpilot serve --host 0.0.0.0 --port 8000

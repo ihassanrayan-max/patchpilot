@@ -46,14 +46,29 @@ def _load_config(config_path: Path) -> dict[str, Any]:
         return tomllib.load(fh)
 
 
+def _resolve_artifact_path(mlruns_dir: Path, info: dict[str, Any]) -> Path | None:
+    """Resolve artifact from ``latest.json``, tolerating cwd-relative paths."""
+    raw = info.get("artifact")
+    if isinstance(raw, str) and raw:
+        candidate = Path(raw)
+        if candidate.exists():
+            return candidate
+    run_id = info.get("run_id")
+    if isinstance(run_id, str) and run_id:
+        fallback = mlruns_dir / run_id / "model.pkl"
+        if fallback.exists():
+            return fallback
+    return None
+
+
 def _load_latest_model_artifact(mlruns_dir: Path) -> tuple[LgbmModel, dict[str, Any]] | None:
     """Locate the latest training artifact + metadata."""
     pointer = mlruns_dir / "latest.json"
     if not pointer.exists():
         return None
     info = cast(dict[str, Any], json.loads(pointer.read_text()))
-    artifact = Path(info["artifact"])
-    if not artifact.exists():
+    artifact = _resolve_artifact_path(mlruns_dir, info)
+    if artifact is None:
         return None
     model = LgbmModel.load(artifact)
     meta_path = artifact.parent / "metadata.json"

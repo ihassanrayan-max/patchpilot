@@ -46,10 +46,11 @@ Weekly cron: [`.github/workflows/eval-vs-epss.yml`](.github/workflows/eval-vs-ep
 
 ```
 make up        # build + start api (:8000) and demo (:8501)
-make ingest    # Phase 1: bronze + silver (default NVD since from config/settings.toml)
-make train     # Phase 2: LightGBM artifact + metadata under .mlruns/<run_id>/
-make eval      # Phase 3: writes docs/benchmarks/REPORT.md (real numeric metrics)
-make serve     # Phase 4: FastAPI service on :8000
+make ingest    # bronze + silver (default NVD since from config/settings.toml)
+make train     # LightGBM artifact + metadata under .mlruns/<run_id>/
+make eval      # writes docs/benchmarks/REPORT.md (real numeric metrics or honest n/a)
+make test-e2e  # fixture-based ingest/train/eval/API smoke (no live NVD)
+make serve     # FastAPI service on :8000
 make demo      # Streamlit on :8501 (talks to the API at PATCHPILOT_API)
 ```
 
@@ -87,8 +88,15 @@ curl -X POST http://localhost:8000/score \
      -d '{"cve_ids":["CVE-2022-42475","CVE-2023-21674"]}'
 curl -X POST http://localhost:8000/rank \
      -H 'content-type: application/json' \
-     -d @sample_sbom.json
+     -d "{\"sbom\": $(cat sample_sbom.json)}"
 ```
+
+On Windows PowerShell, wrap the SBOM yourself:
+
+```
+@{ sbom = (Get-Content sample_sbom.json | ConvertFrom-Json) } | ConvertTo-Json -Depth 20
+```
+
 
 ## Repository layout
 
@@ -101,7 +109,9 @@ docs/{architecture,data-sources,modeling,evaluation,runbook}.md
 docs/benchmarks/REPORT.md
 infra/docker/Dockerfile.{api,trainer,demo}
 .github/workflows/{ci,eval-vs-epss}.yml
-tests/{test_imports,test_label_construction,test_temporal_cv,test_sbom_parser,test_eval_metrics}.py
+tests/test_*.py
+tests/fixtures/
+PATCHPILOT_MASTER_ROADMAP.md
 ```
 
 ## Status
@@ -110,29 +120,27 @@ tests/{test_imports,test_label_construction,test_temporal_cv,test_sbom_parser,te
 | ----- | ----------------------------------------- | ----- |
 | 0     | Scaffold + CI + dockerfiles               | green |
 | 1     | NVD / EPSS / KEV ingest -> silver + label | green |
-| 2     | Features + temporal CV + LightGBM        | green |
-| 3     | Metrics + EPSS comparison report          | green |
+| 2     | Point-in-time features + temporal CV + LightGBM | green |
+| 3     | Rolling holdout metrics + EPSS comparison | green |
 | 4     | FastAPI `/healthz` `/model/info` `/score` `/rank` + Streamlit demo | green |
-| 5     | End-to-end + CI green on main             | pending |
-| 6     | Conformal, SHAP, Evidently, etc.          | backlog |
+| 5     | Fixture e2e + CI green on main            | green |
+| 6+    | Ablations, ops hardening, deploy, integrations | see master roadmap |
 
-Phase 1-4 are real, end-to-end runnable, and produce the artifacts under
-`data/`, `.mlruns/`, and `docs/benchmarks/REPORT.md`. The benchmark table
-above is auto-rewritten by `make eval`.
+Phases 1–5 are real and runnable. The benchmark table above is
+auto-rewritten by `make eval`. **Current numbers show EPSS ahead** —
+do not claim PatchPilot superiority without a fresh REPORT that proves it.
 
-This sprint deliberately uses a **local file model registry** under
-`.mlruns/<run_id>/` (model artifact + JSON metadata + `latest.json`
-pointer) instead of an MLflow tracking backend; the read/write surface
-is small enough to wrap in `mlflow.start_run` later without changing
-call sites. See `src/patchpilot/train/train.py`.
+Model artifacts use a **local file registry** under `.mlruns/<run_id>/`
+(model pickle + JSON metadata + `latest.json` pointer). A hosted MLflow
+tracking server is optional and not required.
 
 ## Roadmap
 
-The full five-phase build plan, schema contract, API contract, and CLI
-contract live in [`PLAN.md`](PLAN.md). The Phase 6 stretch list
-(conformal prediction, SHAP, Evidently, ExploitDB, GHSA, DistilBERT,
-daily retrain) is gated behind Phases 1-5 being green - see
-[Phase 6 in PLAN.md](PLAN.md#2-stretch-list-phase-6--only-after-15-green).
+- **Living execution plan / agent handoff:** [`PATCHPILOT_MASTER_ROADMAP.md`](PATCHPILOT_MASTER_ROADMAP.md)
+- **Schema / API / CLI contract:** [`PLAN.md`](PLAN.md)
+
+Stretch items (SHAP, conformal, GHSA, DistilBERT, scanner integrations,
+cloud deploy) are gated behind the master roadmap credibility checklist.
 
 ## License
 

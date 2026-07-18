@@ -95,6 +95,7 @@ def nvd_bronze_schema() -> pa.Schema:
             pa.field("ref_has_patch", pa.bool_(), nullable=False),
             pa.field("vendors", pa.list_(pa.string()), nullable=True),
             pa.field("products", pa.list_(pa.string()), nullable=True),
+            pa.field("versions", pa.list_(pa.string()), nullable=True),
         ]
     )
 

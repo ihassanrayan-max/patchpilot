@@ -62,12 +62,25 @@ def _parse_iso_datetime(value: str | None) -> date | None:
             return None
 
 
-def _cpe_vendor_product(cpe_uri: str) -> tuple[str | None, str | None]:
-    """Extract ``(vendor, product)`` from a CPE 2.3 URI."""
+def _cpe_vendor_product_version(
+    cpe_uri: str,
+) -> tuple[str | None, str | None, str | None]:
+    """Extract ``(vendor, product, version)`` from a CPE 2.3 URI."""
     parts = cpe_uri.split(":")
     if len(parts) < 5 or parts[0] != "cpe":
-        return None, None
-    return parts[3] or None, parts[4] or None
+        return None, None, None
+    vendor = parts[3] or None
+    product = parts[4] or None
+    version = parts[5] if len(parts) > 5 else None
+    if version in {None, "", "*", "-"}:
+        version = None
+    return vendor, product, version
+
+
+def _cpe_vendor_product(cpe_uri: str) -> tuple[str | None, str | None]:
+    """Extract ``(vendor, product)`` from a CPE 2.3 URI."""
+    vendor, product, _version = _cpe_vendor_product_version(cpe_uri)
+    return vendor, product
 
 
 def parse_nvd_record(raw: dict[str, Any]) -> dict[str, Any] | None:
@@ -137,6 +150,7 @@ def parse_nvd_record(raw: dict[str, Any]) -> dict[str, Any] | None:
 
     vendors: set[str] = set()
     products: set[str] = set()
+    versions: set[str] = set()
     for cfg in cve.get("configurations") or []:
         if not isinstance(cfg, dict):
             continue
@@ -149,11 +163,13 @@ def parse_nvd_record(raw: dict[str, Any]) -> dict[str, Any] | None:
                 cpe = match.get("criteria") or match.get("cpe23Uri")
                 if not isinstance(cpe, str):
                     continue
-                vendor, product = _cpe_vendor_product(cpe)
+                vendor, product, version = _cpe_vendor_product_version(cpe)
                 if vendor:
                     vendors.add(vendor)
                 if product:
                     products.add(product)
+                if version:
+                    versions.add(version)
 
     ref_has_exploit = False
     ref_has_patch = False
@@ -182,6 +198,7 @@ def parse_nvd_record(raw: dict[str, Any]) -> dict[str, Any] | None:
         "ref_has_patch": ref_has_patch,
         "vendors": sorted(vendors) or None,
         "products": sorted(products) or None,
+        "versions": sorted(versions) or None,
     }
 
 
@@ -348,6 +365,7 @@ def ingest_nvd(
             "ref_has_patch": pl.Boolean,
             "vendors": pl.List(pl.Utf8),
             "products": pl.List(pl.Utf8),
+            "versions": pl.List(pl.Utf8),
         },
     )
     table = df.to_arrow().cast(nvd_bronze_schema())
