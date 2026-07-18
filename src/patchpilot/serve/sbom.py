@@ -16,6 +16,7 @@ This is intentionally conservative: version *ranges* from CPE
 from __future__ import annotations
 
 import re
+import urllib.parse
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, cast
@@ -24,7 +25,16 @@ import polars as pl
 
 from patchpilot.ingest.nvd import load_nvd_bronze
 
-_PURL_RE = re.compile(r"^pkg:(?P<type>[^/]+)/(?P<name>[^@?]+)(?:@(?P<version>[^?]+))?")
+# Package URL spec: pkg:type/[namespace/]name[@version][?qualifiers][#subpath]
+# We only extract type/namespace/name/version; qualifiers and subpath are
+# discarded. CPE version *ranges* (versionStartIncluding/versionEndExcluding)
+# are intentionally not modeled — see module docstring.
+_PURL_RE = re.compile(
+    r"^pkg:(?P<type>[^/]+)/(?P<path>[^@?#]+)"
+    r"(?:@(?P<version>[^?#]+))?"
+    r"(?:\?(?P<qualifiers>[^#]*))?"
+    r"(?:#(?P<subpath>.*))?$"
+)
 
 
 @dataclass(frozen=True)
@@ -119,14 +129,31 @@ def _coerce_cve_id(value: Any) -> str | None:
 
 
 def parse_purl(purl: str) -> dict[str, str | None]:
-    """Parse a purl like ``pkg:pypi/foo@1.2.3`` to ``{type, name, version}``."""
+    """Parse a purl per the package-url spec: ``pkg:type/namespace/name@version``.
+
+    ``namespace`` is optional (e.g. ``pkg:pypi/foo@1.2.3`` has none, while
+    ``pkg:maven/org.apache.commons/commons-lang3@3.12.0`` has namespace
+    ``org.apache.commons``). Percent-encoded segments are decoded. Only
+    exact ``@version`` equality is modeled; CPE version *ranges* are not.
+    """
+    if not isinstance(purl, str):
+        return {"type": None, "namespace": None, "name": None, "version": None}
     m = _PURL_RE.match(purl)
     if not m:
-        return {"type": None, "name": None, "version": None}
+        return {"type": None, "namespace": None, "name": None, "version": None}
+    ptype = m.group("type")
+    path = m.group("path") or ""
+    version = m.group("version")
+    segments = [urllib.parse.unquote(seg) for seg in path.split("/") if seg]
+    if not segments:
+        return {"type": ptype, "namespace": None, "name": None, "version": version}
+    name = segments[-1]
+    namespace = "/".join(segments[:-1]) if len(segments) > 1 else None
     return {
-        "type": m.group("type"),
-        "name": m.group("name"),
-        "version": m.group("version"),
+        "type": ptype,
+        "namespace": namespace,
+        "name": name,
+        "version": urllib.parse.unquote(version) if version else None,
     }
 
 
@@ -161,7 +188,9 @@ def cves_for_components(
 
     try:
         nvd = load_nvd_bronze(Path(nvd_bronze_dir))
-    except FileNotFoundError:
+    except (FileNotFoundError, pl.exceptions.ComputeError):
+        # Missing or unreadable/inconsistent bronze corpus degrades gracefully
+        # to inline-VEX-only matches rather than failing the whole request.
         return matches
 
     product_index = _build_product_index(nvd)

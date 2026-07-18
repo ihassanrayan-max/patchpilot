@@ -103,6 +103,17 @@ class HealthResponse(BaseModel):
     model_version: str | None = None
 
 
+class ReadyResponse(BaseModel):
+    """GET /readyz response body (200 only when scoring can return non-vacuous results)."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    status: str
+    model_loaded: bool
+    silver_present: bool
+    detail: str
+
+
 class ModelInfoResponse(BaseModel):
     """GET /model/info response body."""
 

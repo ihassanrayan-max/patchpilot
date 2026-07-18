@@ -149,6 +149,89 @@ def eval_cmd(
         typer.echo(f"wrote ablations to {abl}")
 
 
+@app.command("rank")
+def rank_cmd(
+    sbom: Annotated[
+        Path,
+        typer.Option("--sbom", help="Path to a CycloneDX 1.4/1.5 JSON SBOM."),
+    ],
+    api: Annotated[
+        str | None,
+        typer.Option(
+            "--api",
+            help="Base URL of a running PatchPilot API (POST /rank). Mutually exclusive with --local.",
+        ),
+    ] = None,
+    local: Annotated[
+        bool,
+        typer.Option(
+            "--local",
+            help="Score in-process without a running API server (loads model/silver directly).",
+        ),
+    ] = False,
+    mlruns_dir: Annotated[
+        Path | None,
+        typer.Option(help="Model artifacts dir for --local (default .mlruns or $PATCHPILOT_MLRUNS_DIR)."),
+    ] = None,
+    silver_path: Annotated[
+        Path | None,
+        typer.Option(
+            help="Silver parquet for --local (default data/silver/cve_master.parquet "
+            "or $PATCHPILOT_SILVER_PATH)."
+        ),
+    ] = None,
+    bronze_nvd_dir: Annotated[
+        Path | None,
+        typer.Option(help="Bronze NVD dir for --local (default data/bronze/nvd or $PATCHPILOT_BRONZE_NVD_DIR)."),
+    ] = None,
+) -> None:
+    """Rank CVEs found in a CycloneDX SBOM; write ranked JSON to stdout.
+
+    Exactly one of ``--api`` or ``--local`` selects the scoring backend.
+    When neither is given, defaults to ``--local`` so the command works
+    offline right after ``uv sync`` (EPSS-only fallback if no model/silver
+    are present yet).
+    """
+    import json as _json
+
+    if api and local:
+        typer.echo("pass only one of --api or --local, not both", err=True)
+        raise typer.Exit(code=2)
+
+    sbom_path = Path(sbom)
+    if not sbom_path.is_file():
+        typer.echo(f"SBOM not found at {sbom_path}", err=True)
+        raise typer.Exit(code=2)
+    try:
+        sbom_doc = _json.loads(sbom_path.read_text(encoding="utf-8"))
+    except _json.JSONDecodeError as exc:
+        typer.echo(f"SBOM is not valid JSON: {exc}", err=True)
+        raise typer.Exit(code=2) from exc
+
+    if api:
+        import httpx
+
+        try:
+            with httpx.Client(base_url=api, timeout=30.0) as client:
+                resp = client.post("/rank", json={"sbom": sbom_doc})
+                resp.raise_for_status()
+        except httpx.HTTPError as exc:
+            typer.echo(f"rank request to {api} failed: {exc}", err=True)
+            raise typer.Exit(code=1) from exc
+        typer.echo(_json.dumps(resp.json(), indent=2))
+        return
+
+    from patchpilot.serve.api import STATE, rank_sbom
+
+    STATE.load(mlruns_dir=mlruns_dir, silver_path=silver_path, bronze_nvd_dir=bronze_nvd_dir)
+    try:
+        response = rank_sbom(STATE, sbom_doc)
+    except ValueError as exc:
+        typer.echo(f"invalid SBOM: {exc}", err=True)
+        raise typer.Exit(code=2) from exc
+    typer.echo(_json.dumps(response.model_dump(mode="json"), indent=2))
+
+
 @app.command("serve")
 def serve_cmd(
     host: Annotated[str, typer.Option(help="Bind host.")] = "0.0.0.0",  # noqa: S104

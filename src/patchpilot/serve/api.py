@@ -25,6 +25,7 @@ from fastapi import FastAPI, HTTPException
 
 from patchpilot.models.baseline_epss import EpssBaseline
 from patchpilot.models.lgbm import LgbmModel
+from patchpilot.serve import scoring
 from patchpilot.serve.sbom import ComponentCveMatch, cves_for_components, parse_cyclonedx
 from patchpilot.serve.schemas import (
     HealthResponse,
@@ -32,6 +33,7 @@ from patchpilot.serve.schemas import (
     RankItem,
     RankRequest,
     RankResponse,
+    ReadyResponse,
     ScoreItem,
     ScoreRequest,
     ScoreResponse,
@@ -178,6 +180,21 @@ class _ModelState:
         """Return the loaded model version or ``None`` if no model is loaded."""
         return cast(str | None, self.metadata.get("model_version")) if self.model is not None else None
 
+    @property
+    def silver_present(self) -> bool:
+        """Whether a silver dataset was successfully loaded."""
+        return self.silver is not None
+
+    @property
+    def is_healthy(self) -> bool:
+        """Full readiness: model loaded *and* silver present (used by ``/healthz``)."""
+        return self.model is not None and self.silver_present
+
+    @property
+    def is_ready(self) -> bool:
+        """Minimal readiness for non-vacuous scoring: silver present (model optional; EPSS fallback)."""
+        return self.silver_present
+
     def score_cve_ids(self, cve_ids: list[str]) -> list[ScoreItem]:
         """Score a batch of CVE ids and return :class:`ScoreItem` results."""
         results: list[ScoreItem] = []
@@ -257,8 +274,35 @@ app: FastAPI = FastAPI(
 
 @app.get("/healthz", response_model=HealthResponse)
 def healthz() -> HealthResponse:
-    """Liveness probe; reports the loaded model version (or ``None``)."""
-    return HealthResponse(status="ok", model_version=STATE.model_version)
+    """Liveness probe with real readiness: ``ok`` only when a model is loaded
+    *and* a silver dataset is present; ``degraded`` otherwise (the service is
+    still up and ``/score``/``/rank`` still work via EPSS fallback, but
+    results may be less complete).
+    """
+    status = "ok" if STATE.is_healthy else "degraded"
+    return HealthResponse(status=status, model_version=STATE.model_version)
+
+
+@app.get("/readyz", response_model=ReadyResponse, responses={503: {"model": ReadyResponse}})
+def readyz() -> ReadyResponse:
+    """Readiness probe: 200 only when scoring can return non-vacuous results.
+
+    Silver must be present (source of EPSS scores). The model is optional —
+    when absent, ``/score``/``/rank`` fall back to EPSS-only probabilities.
+    """
+    body = ReadyResponse(
+        status="ready" if STATE.is_ready else "not_ready",
+        model_loaded=STATE.model is not None,
+        silver_present=STATE.silver_present,
+        detail=(
+            "silver present; model optional (EPSS fallback active)"
+            if STATE.is_ready
+            else "not ready: silver dataset missing, cannot serve non-vacuous scores"
+        ),
+    )
+    if not STATE.is_ready:
+        raise HTTPException(status_code=503, detail=body.model_dump())
+    return body
 
 
 @app.get("/model/info", response_model=ModelInfoResponse)
@@ -284,7 +328,7 @@ def model_info() -> ModelInfoResponse:
 def score(request: ScoreRequest) -> ScoreResponse:
     """Score a batch of CVE ids."""
     cve_ids = list(request.cve_ids)
-    items = STATE.score_cve_ids(cve_ids)
+    items = scoring.score_cve_ids(STATE, cve_ids)
     return ScoreResponse(
         model_version=STATE.model_version or "unavailable",
         scored_at=datetime.now(UTC),
@@ -292,31 +336,34 @@ def score(request: ScoreRequest) -> ScoreResponse:
     )
 
 
-@app.post("/rank", response_model=RankResponse)
-def rank(request: RankRequest) -> RankResponse:
-    """Rank vulnerabilities discovered in a CycloneDX SBOM."""
-    try:
-        components = parse_cyclonedx(request.sbom)
-    except ValueError as exc:
-        raise HTTPException(status_code=422, detail=str(exc)) from exc
+def rank_sbom(state: _ModelState, sbom: dict[str, Any]) -> RankResponse:
+    """Parse ``sbom``, resolve CVE candidates, score via :mod:`patchpilot.serve.scoring`,
+    and return a sorted :class:`RankResponse`.
 
-    pairs = cves_for_components(components, nvd_bronze_dir=STATE.bronze_nvd_dir)
+    Shared by the ``/rank`` route and the ``patchpilot rank`` CLI so both
+    surfaces stay in lockstep and neither reimplements the blend/sort logic.
+    Raises ``ValueError`` on a non-CycloneDX SBOM (callers translate to the
+    transport-appropriate error).
+    """
+    components = parse_cyclonedx(sbom)
+
+    pairs = cves_for_components(components, nvd_bronze_dir=state.bronze_nvd_dir)
     if not pairs:
         return RankResponse(
-            model_version=STATE.model_version or "unavailable",
+            model_version=state.model_version or "unavailable",
             ranked_at=datetime.now(UTC),
             items=[],
         )
 
     unique_cves = list({m.cve_id for m in pairs})
-    scored = {item.cve_id: item for item in STATE.score_cve_ids(unique_cves)}
+    scored = {item.cve_id: item for item in scoring.score_cve_ids(state, unique_cves)}
 
     rows: list[tuple[float, float, str, str, ScoreItem, ComponentCveMatch]] = []
     for match in pairs:
         item = scored.get(match.cve_id)
         if item is None:
             continue
-        cvss = STATE.cvss_lookup.get(match.cve_id)
+        cvss = state.cvss_lookup.get(match.cve_id)
         rows.append(
             (
                 item.probability,
@@ -339,7 +386,7 @@ def rank(request: RankRequest) -> RankResponse:
                 purl=purl,
                 probability=item.probability,
                 percentile=item.percentile,
-                cvss_v3_base_score=STATE.cvss_lookup.get(cve),
+                cvss_v3_base_score=state.cvss_lookup.get(cve),
                 in_kev=item.in_kev,
                 match_method=match.match_method,
                 match_confidence=match.match_confidence,
@@ -348,7 +395,16 @@ def rank(request: RankRequest) -> RankResponse:
         )
 
     return RankResponse(
-        model_version=STATE.model_version or "unavailable",
+        model_version=state.model_version or "unavailable",
         ranked_at=datetime.now(UTC),
         items=items,
     )
+
+
+@app.post("/rank", response_model=RankResponse)
+def rank(request: RankRequest) -> RankResponse:
+    """Rank vulnerabilities discovered in a CycloneDX SBOM."""
+    try:
+        return rank_sbom(STATE, request.sbom)
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc

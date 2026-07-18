@@ -112,21 +112,86 @@ def test_rank_rejects_non_cyclonedx(trained_env: Path) -> None:
 
 
 def test_degraded_mode_without_model(tmp_path: Path) -> None:
-    """API still serves when no model artifact exists (EPSS fallback / zeros)."""
+    """API still serves when no model artifact exists (EPSS fallback / zeros).
+
+    ``/healthz`` must honestly report ``degraded`` (silver present, model
+    missing) rather than claiming full ``ok`` readiness.
+    """
     from patchpilot.serve import api as api_mod
 
-    silver_dir = tmp_path / "data" / "silver"
-    silver_dir.mkdir(parents=True)
     build_fixture_tree(tmp_path)
     api_mod.STATE.load(
         mlruns_dir=tmp_path / "missing-mlruns",
-        silver_path=silver_dir / "cve_master.parquet",
+        silver_path=tmp_path / "data" / "silver" / "cve_master.parquet",
         bronze_nvd_dir=tmp_path / "data" / "bronze" / "nvd",
     )
     client = TestClient(api_mod.app)
     health = client.get("/healthz").json()
-    assert health["status"] == "ok"
+    assert health["status"] == "degraded"
     assert health["model_version"] is None
     scored = client.post("/score", json={"cve_ids": ["CVE-2023-0001"]})
     assert scored.status_code == 200
     assert scored.json()["model_version"] == "unavailable"
+
+
+def test_healthz_degraded_when_silver_missing(tmp_path: Path) -> None:
+    """No silver at all (fresh checkout, no ingest yet) is also ``degraded``."""
+    from patchpilot.serve import api as api_mod
+
+    api_mod.STATE.load(
+        mlruns_dir=tmp_path / "missing-mlruns",
+        silver_path=tmp_path / "data" / "silver" / "cve_master.parquet",
+        bronze_nvd_dir=tmp_path / "data" / "bronze" / "nvd",
+    )
+    client = TestClient(api_mod.app)
+    health = client.get("/healthz").json()
+    assert health["status"] == "degraded"
+
+
+def test_readyz_200_when_silver_present(trained_env: Path) -> None:
+    """``/readyz`` is 200 once silver is present, regardless of model."""
+    client = _client_for(trained_env)
+    resp = client.get("/readyz")
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["status"] == "ready"
+    assert body["silver_present"] is True
+
+
+def test_readyz_503_when_silver_missing(tmp_path: Path) -> None:
+    """``/readyz`` is 503 when silver is missing, even without a model."""
+    from patchpilot.serve import api as api_mod
+
+    api_mod.STATE.load(
+        mlruns_dir=tmp_path / "missing-mlruns",
+        silver_path=tmp_path / "data" / "silver" / "cve_master.parquet",
+        bronze_nvd_dir=tmp_path / "data" / "bronze" / "nvd",
+    )
+    client = TestClient(api_mod.app)
+    resp = client.get("/readyz")
+    assert resp.status_code == 503
+
+
+def test_rank_sbom_helper_used_by_cli_matches_route(trained_env: Path) -> None:
+    """The extracted ``rank_sbom`` helper (shared with the CLI) matches the route."""
+    from patchpilot.serve import api as api_mod
+
+    sbom = {
+        "bomFormat": "CycloneDX",
+        "specVersion": "1.5",
+        "components": [
+            {
+                "bom-ref": "pkg:generic/openssl@3.0.0",
+                "name": "openssl",
+                "version": "3.0.0",
+                "purl": "pkg:generic/openssl@3.0.0",
+            }
+        ],
+        "vulnerabilities": [
+            {"id": "CVE-2023-0001", "affects": [{"ref": "pkg:generic/openssl@3.0.0"}]}
+        ],
+    }
+    client = _client_for(trained_env)
+    direct = api_mod.rank_sbom(api_mod.STATE, sbom)
+    routed = client.post("/rank", json={"sbom": sbom}).json()
+    assert [i.cve_id for i in direct.items] == [i["cve_id"] for i in routed["items"]]

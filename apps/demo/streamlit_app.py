@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import json
 import os
+from pathlib import Path
 from typing import Any
 
 import httpx
@@ -16,7 +17,8 @@ import streamlit as st
 
 API_URL = os.environ.get("PATCHPILOT_API", "http://localhost:8000")
 DEFAULT_CVES = "CVE-2022-42475\nCVE-2023-21674\nCVE-2024-12345"
-DEFAULT_SBOM = json.dumps(
+
+_INLINE_FALLBACK_SBOM = json.dumps(
     {
         "bomFormat": "CycloneDX",
         "specVersion": "1.5",
@@ -34,6 +36,32 @@ DEFAULT_SBOM = json.dumps(
     },
     indent=2,
 )
+
+
+def _load_default_sbom() -> str:
+    """Best-effort load of the repo's root ``sample_sbom.json``.
+
+    Tries an explicit ``PATCHPILOT_SAMPLE_SBOM`` override, the current
+    working directory, and the path relative to this file (``apps/demo`` ->
+    repo root) so the demo works both from a local checkout and a container
+    build. Falls back to a small inline SBOM if none are found.
+    """
+    candidates = []
+    env_override = os.environ.get("PATCHPILOT_SAMPLE_SBOM")
+    if env_override:
+        candidates.append(Path(env_override))
+    candidates.append(Path("sample_sbom.json"))
+    candidates.append(Path(__file__).resolve().parents[2] / "sample_sbom.json")
+    for candidate in candidates:
+        try:
+            if candidate.is_file():
+                return candidate.read_text(encoding="utf-8")
+        except OSError:
+            continue
+    return _INLINE_FALLBACK_SBOM
+
+
+DEFAULT_SBOM = _load_default_sbom()
 
 
 def _client() -> httpx.Client:
