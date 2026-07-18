@@ -1,9 +1,23 @@
 """LightGBM challenger model wrapper.
 
-The wrapper is intentionally small: a deterministic LightGBM binary
-classifier with optional isotonic calibration applied at ``predict_proba``
-time. Persisted as a single ``.pkl`` blob with both the booster and the
-calibrator so loading is a single ``LgbmModel.load`` call.
+The wrapper is intentionally small: a deterministic LightGBM model with
+optional isotonic calibration applied at ``predict_proba`` time. Persisted
+as a single ``.pkl`` blob with both the booster and the calibrator so
+loading is a single ``LgbmModel.load`` call.
+
+Two ``task`` modes are supported:
+
+``"classification"``
+    Binary objective predicting ``exploited_30d`` directly. ``predict_proba``
+    returns calibrated probabilities clipped to ``[0, 1]``. Used for the
+    ``full`` / ``no_epss`` ablation variants.
+
+``"regression"``
+    Used by the ``epss_complement`` training strategy: the booster predicts
+    a *residual* (``label - epss``) rather than an absolute probability, so
+    its raw output can be negative and must not be clipped to ``[0, 1]`` or
+    passed through a binary calibrator. Callers use :meth:`predict_raw` and
+    blend with EPSS themselves (see ``patchpilot.serve.scoring``).
 """
 
 from __future__ import annotations
@@ -11,7 +25,7 @@ from __future__ import annotations
 import pickle
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, cast
+from typing import Any, Literal, cast
 
 import lightgbm as lgb
 import numpy as np
@@ -28,6 +42,8 @@ DEFAULT_PARAMS: dict[str, Any] = {
     "verbose": -1,
 }
 
+ModelTask = Literal["classification", "regression"]
+
 
 @dataclass
 class LgbmModelMeta:
@@ -39,20 +55,32 @@ class LgbmModelMeta:
     trained_n: int = 0
     valid_n: int = 0
     model_version: str = "lgbm@v0.1.0"
+    task: ModelTask = "classification"
 
 
 class LgbmModel:
-    """LightGBM binary classifier predicting ``exploited_30d``."""
+    """LightGBM model predicting ``exploited_30d`` (or its EPSS residual)."""
 
-    def __init__(self, params: dict[str, Any] | None = None, seed: int = 42) -> None:
+    def __init__(
+        self,
+        params: dict[str, Any] | None = None,
+        seed: int = 42,
+        task: ModelTask = "classification",
+    ) -> None:
         """Initialise with LightGBM hyperparameters (deterministic for fixed seed)."""
         merged = {**DEFAULT_PARAMS, **(params or {})}
+        if task == "regression":
+            # Residual targets (label - epss) are continuous and can be
+            # negative; a binary/logloss objective would be nonsensical here.
+            merged["objective"] = "regression"
+            merged.setdefault("metric", "l2")
         merged.update({"random_state": seed, "deterministic": True, "verbose": -1})
         self.params: dict[str, Any] = merged
         self.seed: int = seed
+        self.task: ModelTask = task
         self.booster: lgb.Booster | None = None
         self.calibrator: Any | None = None
-        self.meta: LgbmModelMeta = LgbmModelMeta(params=merged, seed=seed)
+        self.meta: LgbmModelMeta = LgbmModelMeta(params=merged, seed=seed, task=task)
 
     def fit(
         self,
@@ -64,12 +92,19 @@ class LgbmModel:
     ) -> None:
         """Train the booster, optionally with early stopping on the valid fold."""
         x_train = np.asarray(x_train, dtype=np.float32)
-        y_train = np.asarray(y_train, dtype=np.int8)
-        if y_train.sum() == 0 or y_train.sum() == len(y_train):
-            raise ValueError(
-                "training labels are degenerate (all zeros or all ones); "
-                "cannot fit a binary classifier"
-            )
+        label_dtype = np.float32 if self.task == "regression" else np.int8
+        y_train = np.asarray(y_train, dtype=label_dtype)
+        if self.task == "regression":
+            if len(y_train) == 0 or float(np.std(y_train)) == 0.0:
+                raise ValueError(
+                    "training targets are degenerate (constant); cannot fit a regressor"
+                )
+        else:
+            if y_train.sum() == 0 or y_train.sum() == len(y_train):
+                raise ValueError(
+                    "training labels are degenerate (all zeros or all ones); "
+                    "cannot fit a binary classifier"
+                )
 
         train_set = lgb.Dataset(
             x_train,
@@ -81,7 +116,7 @@ class LgbmModel:
         if x_valid is not None and y_valid is not None and len(x_valid) > 0:
             valid_set = lgb.Dataset(
                 np.asarray(x_valid, dtype=np.float32),
-                label=np.asarray(y_valid, dtype=np.int8),
+                label=np.asarray(y_valid, dtype=label_dtype),
                 reference=train_set,
                 feature_name=feature_names or "auto",
             )
@@ -106,16 +141,36 @@ class LgbmModel:
             seed=self.seed,
             trained_n=int(len(y_train)),
             valid_n=int(len(y_valid)) if y_valid is not None else 0,
+            task=self.task,
         )
 
     def predict_proba(self, x: np.ndarray) -> np.ndarray:
-        """Return calibrated probabilities (or raw scores if no calibrator fit)."""
+        """Return calibrated probabilities (or raw scores if no calibrator fit).
+
+        Only meaningful for ``task="classification"`` models. Residual
+        (``task="regression"``) models must use :meth:`predict_raw` instead,
+        since clipping to ``[0, 1]`` here would destroy the sign needed for
+        the EPSS-complement blend.
+        """
         if self.booster is None:
             raise RuntimeError("model has not been fit")
         scores = np.asarray(self.booster.predict(np.asarray(x, dtype=np.float32)))
         if self.calibrator is not None:
             scores = np.asarray(self.calibrator.predict(scores))
         return np.clip(scores, 0.0, 1.0).astype(np.float32)
+
+    def predict_raw(self, x: np.ndarray) -> np.ndarray:
+        """Return uncalibrated, unclipped raw booster predictions.
+
+        Used for residual (``task="regression"``) models, whose output can
+        be negative and is added to EPSS by the caller
+        (``clamp01(epss + residual)``), not consumed directly as a probability.
+        """
+        if self.booster is None:
+            raise RuntimeError("model has not been fit")
+        return np.asarray(
+            self.booster.predict(np.asarray(x, dtype=np.float32)), dtype=np.float32
+        )
 
     def set_calibrator(self, calibrator: Any) -> None:
         """Attach a fitted calibrator with a ``.predict`` method."""
@@ -150,7 +205,9 @@ class LgbmModel:
         """Load a previously saved model from ``path``."""
         with Path(path).open("rb") as fh:
             payload = cast(dict[str, Any], pickle.load(fh))
-        instance = cls(params=payload["params"], seed=payload["meta"].seed)
+        meta = payload["meta"]
+        task = cast(ModelTask, getattr(meta, "task", "classification"))
+        instance = cls(params=payload["params"], seed=meta.seed, task=task)
         instance.booster = lgb.Booster(model_str=payload["booster_txt"])
         instance.calibrator = payload.get("calibrator")
         instance.meta = payload["meta"]

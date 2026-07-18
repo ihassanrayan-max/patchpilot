@@ -32,6 +32,11 @@ n_splits      = 5
 embargo_days  = 30
 seed          = 42
 mlflow_experiment = "patchpilot"
+# Only supported v0.1 training strategy: the model predicts a residual on
+# top of point-in-time EPSS (probability = clamp01(epss + residual)) rather
+# than an absolute probability, so scores never silently zero out a CVE
+# that EPSS already flags as risky. See docs/modeling.md.
+strategy      = "epss_complement"
 # LightGBM hyperparameters (Phase 2 may tune via Optuna).
 [train.lgbm]
 objective         = "binary"

@@ -182,10 +182,12 @@ def _render_markdown(
         f"| EPSS | {_fmt_metric(epss['auc_pr'])} | {_fmt_metric(epss['auc_roc'])} | "
         f"{_fmt_metric(epss['p_at_k'])} | {_fmt_metric(epss['brier'])} | {_fmt_metric(epss['ece'])} |\n\n"
         "## Notes\n\n"
-        "PatchPilot scores come from the latest LightGBM run; EPSS scores come from "
-        "the EPSS column of `cve_master.parquet`. Both models are scored on the same "
-        "rolling closed-window holdout selected by `select_eval_holdout` "
-        "(most recent right-censored slice meeting configured minimums). "
+        "PatchPilot scores come from the latest trained artifact (EPSS-complement: "
+        "`clamp01(epss + residual)` when the strategy is active); EPSS scores come "
+        "from the same point-in-time `f_epss_score` feature used at training time "
+        "(not a live/current lookup), so the comparison is a fair head-to-head. "
+        "Both models are scored on the same rolling closed-window holdout selected "
+        "by `select_eval_holdout` (most recent right-censored slice meeting configured minimums). "
         "The label is `exploited_30d` per `PLAN.md`. Training excludes this slice; "
         "see `heldout_content_sha256` in `.mlruns/<run_id>/metadata.json`.\n"
         + (f"\n**Evaluation integrity:** {extra_notes}\n" if extra_notes else "")
@@ -271,7 +273,7 @@ def _write_unavailable_report(
         holdout_n_positives=window.n_positives if window is not None else None,
     )
     report_path.parent.mkdir(parents=True, exist_ok=True)
-    report_path.write_text(body)
+    report_path.write_text(body, encoding="utf-8")
     _sync_readme_unavailable(readme_path, top_k=top_k)
     return report_path
 
@@ -351,11 +353,27 @@ def write_report(
     ]
     x = holdout.select(feature_names).to_numpy().astype(np.float32)
     y = holdout.get_column("exploited_30d").to_numpy().astype(np.int8)
-    pp_scores = model.predict_proba(x)
 
-    cve_ids = holdout.get_column("cve_id").to_list()
-    epss_baseline = EpssBaseline.from_silver(silver_path)
-    epss_scores = np.asarray(epss_baseline.predict_proba(cve_ids), dtype=np.float64)
+    # Fair PIT EPSS baseline: score the EPSS column with the *same*
+    # point-in-time snapshot used for training/PatchPilot features
+    # (`f_epss_score`), not a live/current lookup against silver. The two
+    # can disagree for CVEs whose EPSS score moved after publication, which
+    # previously made the "EPSS" row of this report an easier target than
+    # what PatchPilot actually trained against.
+    if "f_epss_score" in holdout.columns:
+        epss_scores = holdout.get_column("f_epss_score").to_numpy().astype(np.float64)
+    else:
+        cve_ids = holdout.get_column("cve_id").to_list()
+        epss_baseline = EpssBaseline.from_silver(silver_path)
+        epss_scores = np.asarray(epss_baseline.predict_proba(cve_ids), dtype=np.float64)
+
+    strategy = str(model_meta.get("strategy", ""))
+    model_task = str(getattr(model, "task", model_meta.get("task", "classification")))
+    if strategy == "epss_complement" and model_task == "regression":
+        residual = model.predict_raw(x)
+        pp_scores = np.clip(epss_scores + np.asarray(residual, dtype=np.float64), 0.0, 1.0)
+    else:
+        pp_scores = model.predict_proba(x)
 
     def _metrics(scores: np.ndarray) -> dict[str, float]:
         return {
@@ -368,6 +386,15 @@ def write_report(
 
     pp_metrics = _metrics(pp_scores)
     epss_metrics = _metrics(epss_scores)
+
+    if strategy == "epss_complement" and model_task == "regression":
+        lift = pp_metrics["auc_pr"] - epss_metrics["auc_pr"]
+        lift_note = (
+            f"EPSS-complement strategy active: PatchPilot = clamp01(EPSS + residual). "
+            f"Lift over EPSS on this holdout is delta-AUC-PR = {lift:+.4f} "
+            f"({'above' if lift > 0 else 'at or below'} the EPSS-only baseline)."
+        )
+        extra_notes = f"{extra_notes} {lift_note}" if extra_notes else lift_note
 
     train_rows = closed.filter(pl.col("published_date") < pl.lit(window.start))
     train_start = train_rows.get_column("published_date").min() if len(train_rows) else None
@@ -398,7 +425,7 @@ def write_report(
     )
 
     report_path.parent.mkdir(parents=True, exist_ok=True)
-    report_path.write_text(body)
+    report_path.write_text(body, encoding="utf-8")
     _sync_readme_metrics(
         readme_path,
         pp=pp_metrics,

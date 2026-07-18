@@ -25,7 +25,6 @@ from patchpilot.eval.metrics import auc_roc, aucpr, brier_score, precision_at_k
 from patchpilot.features.point_in_time import assemble_feature_frame
 from patchpilot.ingest.silver import LABEL_HORIZON_DAYS, right_censor_mask
 from patchpilot.models.lgbm import DEFAULT_PARAMS, LgbmModel
-from patchpilot.train.calibration import fit_calibrator
 from patchpilot.train.holdout import (
     compute_holdout_content_sha256,
     load_eval_holdout_config,
@@ -36,6 +35,13 @@ from patchpilot.train.temporal_cv import temporal_splits
 MODEL_VERSION = "lgbm@v0.1.0"
 
 _NON_BOOSTER_KEYS = frozenset({"early_stopping_rounds"})
+
+# EPSS-complement is the only supported v0.1 training strategy (see
+# publishable_multi-agent_v0.1 plan): the model predicts a residual on top
+# of point-in-time EPSS rather than an absolute probability, so scores never
+# silently zero out a CVE that EPSS already flags as risky.
+SUPPORTED_STRATEGIES = frozenset({"epss_complement"})
+DEFAULT_STRATEGY = "epss_complement"
 
 
 def _load_config(config_path: Path) -> dict[str, Any]:
@@ -125,6 +131,11 @@ def _row_metrics(y_true: np.ndarray, y_score: np.ndarray) -> dict[str, float]:
     }
 
 
+def _blend_epss_residual(epss: np.ndarray, residual: np.ndarray) -> np.ndarray:
+    """``clamp01(epss + residual)`` — the locked EPSS-complement blend."""
+    return np.clip(np.asarray(epss, dtype=np.float64) + np.asarray(residual, dtype=np.float64), 0.0, 1.0)
+
+
 def _sequential_tune_fold(
     *,
     base_params: dict[str, Any],
@@ -135,7 +146,11 @@ def _sequential_tune_fold(
     y_valid: np.ndarray,
     feature_names: list[str],
 ) -> dict[str, Any]:
-    """Pick ``max_depth``, ``num_leaves``, ``min_data_in_leaf`` by sequential grid search."""
+    """Pick ``max_depth``, ``num_leaves``, ``min_data_in_leaf`` by sequential grid search.
+
+    Scores candidates by validation AUC-PR of a plain binary classifier.
+    Used for the non-complement ablation variants (full / no-epss).
+    """
 
     def valid_pr(params: dict[str, Any]) -> float:
         model = LgbmModel(params=params, seed=seed)
@@ -144,6 +159,43 @@ def _sequential_tune_fold(
         value = float(aucpr(y_valid, scores))
         return value if value == value else -1.0
 
+    return _grid_search(base_params, valid_pr)
+
+
+def _sequential_tune_fold_residual(
+    *,
+    base_params: dict[str, Any],
+    seed: int,
+    x_train: np.ndarray,
+    y_train_res: np.ndarray,
+    x_valid: np.ndarray,
+    y_valid_res: np.ndarray,
+    y_valid_label: np.ndarray,
+    epss_valid: np.ndarray,
+    feature_names: list[str],
+) -> dict[str, Any]:
+    """Pick hyperparameters for the residual regressor by blended validation AUC-PR.
+
+    The regressor predicts ``label - epss``; candidates are scored by the
+    AUC-PR of the *blended* score (``clamp01(epss + residual)``) against the
+    true binary label, since that is what the model is ultimately judged on.
+    """
+
+    def valid_pr(params: dict[str, Any]) -> float:
+        model = LgbmModel(params=params, seed=seed, task="regression")
+        model.fit(x_train, y_train_res, x_valid, y_valid_res, feature_names=feature_names)
+        residual = model.predict_raw(x_valid)
+        blended = _blend_epss_residual(epss_valid, residual)
+        value = float(aucpr(y_valid_label, blended))
+        return value if value == value else -1.0
+
+    return _grid_search(base_params, valid_pr)
+
+
+def _grid_search(
+    base_params: dict[str, Any], valid_pr: Any
+) -> dict[str, Any]:
+    """Shared sequential grid search over depth / leaves / min-data-in-leaf."""
     tuned = dict(base_params)
     best_depth = max([6, 8, 12], key=lambda d: valid_pr({**tuned, "max_depth": d}))
     tuned["max_depth"] = best_depth
@@ -178,6 +230,11 @@ def train_lgbm(config_path: Path) -> str:
     raw_lgbm = dict(train_cfg.get("lgbm", {}))
     lgbm_params = {k: v for k, v in raw_lgbm.items() if k not in _NON_BOOSTER_KEYS}
     base_lgbm = {**DEFAULT_PARAMS, **lgbm_params}
+    strategy = str(train_cfg.get("strategy", DEFAULT_STRATEGY)).strip().lower()
+    if strategy not in SUPPORTED_STRATEGIES:
+        raise ValueError(
+            f"unsupported [train].strategy={strategy!r}; v0.1 only supports {sorted(SUPPORTED_STRATEGIES)}"
+        )
 
     frame = assemble_training_frame(
         silver_path,
@@ -221,6 +278,14 @@ def train_lgbm(config_path: Path) -> str:
     labels = train_frame.get_column("exploited_30d").to_numpy().astype(np.int8)
     dates = train_frame.get_column("published_date").to_list()
 
+    if "f_epss_score" not in feature_names:
+        raise RuntimeError(
+            "epss_complement strategy requires an 'f_epss_score' feature; "
+            "check [features] flags and the EPSS bronze snapshots"
+        )
+    epss_full = train_frame.get_column("f_epss_score").to_numpy().astype(np.float64)
+    residual_full = (labels.astype(np.float64) - epss_full).astype(np.float32)
+
     n_pos = int(labels.sum())
     if n_pos < 5:
         raise RuntimeError(
@@ -250,13 +315,18 @@ def train_lgbm(config_path: Path) -> str:
         y_valid = labels[valid_idx]
         if y_train.sum() < 1 or y_valid.sum() < 1:
             continue
-        tuned_params = _sequential_tune_fold(
+        y_train_res = residual_full[train_idx]
+        y_valid_res = residual_full[valid_idx]
+        epss_valid_fold = epss_full[valid_idx]
+        tuned_params = _sequential_tune_fold_residual(
             base_params=base_lgbm,
             seed=seed,
             x_train=feature_matrix[train_idx],
-            y_train=y_train,
+            y_train_res=y_train_res,
             x_valid=feature_matrix[valid_idx],
-            y_valid=y_valid,
+            y_valid_res=y_valid_res,
+            y_valid_label=y_valid,
+            epss_valid=epss_valid_fold,
             feature_names=feature_names,
         )
         last_fold_params = tuned_params
@@ -267,16 +337,17 @@ def train_lgbm(config_path: Path) -> str:
                 "min_data_in_leaf": tuned_params["min_data_in_leaf"],
             }
         )
-        fold_model = LgbmModel(params=tuned_params, seed=seed)
+        fold_model = LgbmModel(params=tuned_params, seed=seed, task="regression")
         fold_model.fit(
             feature_matrix[train_idx],
-            y_train,
+            y_train_res,
             feature_matrix[valid_idx],
-            y_valid,
+            y_valid_res,
             feature_names=feature_names,
         )
-        scores = fold_model.predict_proba(feature_matrix[valid_idx])
-        fold_metrics.append(_row_metrics(y_valid, scores))
+        residual_pred = fold_model.predict_raw(feature_matrix[valid_idx])
+        blended = _blend_epss_residual(epss_valid_fold, residual_pred)
+        fold_metrics.append(_row_metrics(y_valid, blended))
         last_train_idx = train_idx
         last_valid_idx = valid_idx
 
@@ -285,20 +356,22 @@ def train_lgbm(config_path: Path) -> str:
             "no usable temporal-CV fold produced predictions; check label balance."
         )
 
-    # Final fit on train + valid of the latest fold; calibrate on the held-out valid.
-    final_model = LgbmModel(params=last_fold_params, seed=seed)
+    # Final fit on train + valid of the latest fold. Residual (epss_complement)
+    # models are not run through isotonic calibration: the calibrator API
+    # assumes a binary-label target, but this booster predicts a signed
+    # residual that is blended with EPSS by the caller, not consumed directly.
+    final_model = LgbmModel(params=last_fold_params, seed=seed, task="regression")
     final_model.fit(
         feature_matrix[last_train_idx],
-        labels[last_train_idx],
+        residual_full[last_train_idx],
         feature_matrix[last_valid_idx],
-        labels[last_valid_idx],
+        residual_full[last_valid_idx],
         feature_names=feature_names,
     )
-    valid_scores = final_model.predict_proba(feature_matrix[last_valid_idx])
-    calibrator = fit_calibrator(valid_scores, labels[last_valid_idx], method="isotonic")
-    final_model.set_calibrator(calibrator)
 
-    final_scores = final_model.predict_proba(feature_matrix[last_valid_idx])
+    final_residual = final_model.predict_raw(feature_matrix[last_valid_idx])
+    final_epss_valid = epss_full[last_valid_idx]
+    final_scores = _blend_epss_residual(final_epss_valid, final_residual)
     final_metrics = _row_metrics(labels[last_valid_idx], final_scores)
     averaged = {
         k: float(np.mean([m[k] for m in fold_metrics])) for k in fold_metrics[0]
@@ -314,6 +387,8 @@ def train_lgbm(config_path: Path) -> str:
     metadata: dict[str, Any] = {
         "run_id": run_id,
         "model_version": MODEL_VERSION,
+        "strategy": strategy,
+        "task": final_model.task,
         "trained_at": datetime.now(UTC).isoformat(),
         "silver_path": str(silver_path),
         "feature_names": feature_names,

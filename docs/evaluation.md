@@ -21,11 +21,27 @@
    When metrics cannot be computed, both files show `n/a` with a reason —
    never fabricated numbers.
 
-## Point-in-time scoring for the challenger
+## Point-in-time scoring for the challenger and the baseline (fair PIT EPSS)
 
 PatchPilot holdout scores use the same point-in-time feature assembly as
-training (`assemble_training_frame`). The EPSS baseline uses the EPSS
-columns on silver (`EpssBaseline.from_silver`) for the comparison protocol.
+training (`assemble_training_frame`). The EPSS **baseline** uses the same
+point-in-time `f_epss_score` column from that holdout frame whenever it is
+present — not a live/current lookup against silver
+(`EpssBaseline.from_silver`, which reflects *today's* EPSS snapshot). This
+matters: EPSS scores drift over time, so scoring the baseline with a newer
+snapshot than the one the challenger trained against would make EPSS look
+artificially strong (or weak) relative to what PatchPilot actually saw.
+`EpssBaseline.from_silver` is kept only as a fallback for holdout frames
+that lack `f_epss_score` (e.g. hand-built test frames).
+
+## EPSS-complement scoring
+
+`[train].strategy = "epss_complement"` (the only supported v0.1 strategy)
+trains the challenger to predict a residual on top of EPSS rather than an
+absolute probability; the report scores `clamp01(epss + residual)` as
+"PatchPilot" and includes a note with the lift over the EPSS-only baseline
+(`delta-AUC-PR`). See `docs/modeling.md` for why this is the product
+strategy, not a workaround.
 
 ## CI gates
 
@@ -37,5 +53,6 @@ columns on silver (`EpssBaseline.from_silver`) for the comparison protocol.
 
 ## Ablations
 
-`make ablate` writes `docs/benchmarks/ABLATIONS.md` comparing full /
-no-EPSS / EPSS-only variants on the same holdout.
+`make ablate` writes `docs/benchmarks/ABLATIONS.md` comparing EPSS-only /
+full / no-EPSS / EPSS-complement variants on the same holdout (see
+`docs/modeling.md#ablations`).
