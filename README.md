@@ -55,6 +55,51 @@ breaks this down further (EPSS-only / full classifier / no-EPSS / complement).
 Do not repeat a "PatchPilot beats EPSS" claim anywhere without pointing at a
 fresh REPORT that shows it.
 
+## Install
+
+**Python 3.11 only** (`requires-python == 3.11.*` in `pyproject.toml`).
+
+### From GitHub Release (available now)
+
+Download the wheel or sdist from
+[v0.1.0](https://github.com/ihassanrayan-max/patchpilot/releases/tag/v0.1.0):
+
+```bash
+curl -LO https://github.com/ihassanrayan-max/patchpilot/releases/download/v0.1.0/patchpilot-0.1.0-py3-none-any.whl
+pip install patchpilot-0.1.0-py3-none-any.whl
+patchpilot rank --sbom sample_sbom.json --local
+```
+
+Or clone and install editable for development:
+
+```bash
+git clone https://github.com/ihassanrayan-max/patchpilot.git
+cd patchpilot
+uv sync   # or: pip install -e .
+```
+
+### From PyPI (after Trusted Publishing is configured)
+
+`patchpilot` is **not on PyPI yet**. The repo ships
+[`.github/workflows/publish-pypi.yml`](.github/workflows/publish-pypi.yml)
+(OIDC Trusted Publishing — no `PYPI_TOKEN` secret required). One-time setup:
+
+1. Create the PyPI project **patchpilot** at https://pypi.org/manage/projects/
+   (empty project is fine; first trusted upload registers the release).
+2. Open https://pypi.org/manage/account/publishing/ → **Add a new pending publisher**.
+3. Set **PyPI project name** `patchpilot`, **Owner** `ihassanrayan-max`,
+   **Repository name** `patchpilot`, **Workflow name** `publish-pypi.yml`,
+   **Environment name** blank → Save.
+4. Actions → **publish-pypi** → **Run workflow** with tag `v0.1.0`.
+
+After a successful run:
+
+```bash
+pip install patchpilot==0.1.0
+```
+
+Future `v*` tags publish to PyPI automatically when the GitHub Release is published.
+
 ## Quickstart
 
 ```
@@ -141,7 +186,7 @@ that another repo's workflow can call directly — it fails the job if `/readyz`
 isn't ready, then posts the SBOM to `/rank`:
 
 ```yaml
-- uses: your-org/PatchPilot/.github/actions/rank-sbom@v0.1.0
+- uses: ihassanrayan-max/patchpilot/.github/actions/rank-sbom@v0.1.0
   with:
     sbom-path: path/to/sbom.json
     api-url: https://your-patchpilot-instance.example.com
@@ -164,7 +209,7 @@ config/settings.toml
 docs/{architecture,data-sources,modeling,evaluation,runbook}.md
 docs/benchmarks/{REPORT,ABLATIONS}.md
 infra/docker/Dockerfile.{api,trainer,demo}
-.github/workflows/{ci,eval-vs-epss,release,example-rank-sbom}.yml
+.github/workflows/{ci,eval-vs-epss,release,publish-pypi,example-rank-sbom}.yml
 .github/actions/rank-sbom/action.yml
 tests/test_*.py
 tests/fixtures/

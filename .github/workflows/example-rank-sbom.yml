@@ -1,6 +1,6 @@
 # Documentation sample — run manually from the Actions tab.
 # In another repository, reference:
-#   uses: your-org/PatchPilot/.github/actions/rank-sbom@v0.1.0
+#   uses: ihassanrayan-max/patchpilot/.github/actions/rank-sbom@v0.1.0
 name: example-rank-sbom
 
 on:

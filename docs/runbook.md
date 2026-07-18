@@ -107,7 +107,7 @@ jobs:
       - uses: actions/checkout@v4
 
       - name: Rank vulnerabilities
-        uses: your-org/PatchPilot/.github/actions/rank-sbom@v0.1.0
+        uses: ihassanrayan-max/patchpilot/.github/actions/rank-sbom@v0.1.0
         with:
           sbom-path: path/to/sbom.json
           api-url: https://patchpilot.example.com
