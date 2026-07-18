@@ -1,0 +1,55 @@
+name: Rank SBOM
+description: Rank a CycloneDX SBOM via a PatchPilot API instance.
+inputs:
+  sbom-path:
+    description: Path to a CycloneDX JSON SBOM file on the runner.
+    required: true
+  api-url:
+    description: PatchPilot API base URL (no trailing slash).
+    required: true
+  output-path:
+    description: Path where ranked JSON will be written.
+    required: false
+    default: ranked-sbom.json
+outputs:
+  ranked-json-path:
+    description: Path to the ranked JSON file written by this action.
+    value: ${{ steps.rank.outputs.ranked-json-path }}
+runs:
+  using: composite
+  steps:
+    - name: Verify API readiness
+      shell: bash
+      run: |
+        set -euo pipefail
+        API_URL="${{ inputs.api-url }}"
+        READY_CODE="$(curl -sS -o /dev/null -w "%{http_code}" "${API_URL}/readyz" || echo "000")"
+        if [ "${READY_CODE}" != "200" ]; then
+          echo "::error::PatchPilot API not ready at ${API_URL}/readyz (HTTP ${READY_CODE})"
+          exit 1
+        fi
+        echo "PatchPilot API ready at ${API_URL}"
+
+    - name: Rank SBOM
+      id: rank
+      shell: bash
+      run: |
+        set -euo pipefail
+        SBOM_PATH="${{ inputs.sbom-path }}"
+        API_URL="${{ inputs.api-url }}"
+        OUTPUT_PATH="${{ inputs.output-path }}"
+
+        if [ ! -f "${SBOM_PATH}" ]; then
+          echo "::error::SBOM file not found: ${SBOM_PATH}"
+          exit 1
+        fi
+
+        jq -n --slurpfile sbom "${SBOM_PATH}" '{sbom: $sbom[0]}' > /tmp/patchpilot-rank-request.json
+
+        curl -sS -f -X POST "${API_URL}/rank" \
+          -H "Content-Type: application/json" \
+          -d @/tmp/patchpilot-rank-request.json \
+          -o "${OUTPUT_PATH}"
+
+        echo "ranked-json-path=${OUTPUT_PATH}" >> "${GITHUB_OUTPUT}"
+        echo "Wrote ranked SBOM to ${OUTPUT_PATH} ($(jq '.items | length' "${OUTPUT_PATH}") items)"

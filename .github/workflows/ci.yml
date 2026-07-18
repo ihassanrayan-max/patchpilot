@@ -1,43 +1,83 @@
-name: ci
-
-on:
-  push:
-    branches: [main]
-  pull_request:
-    branches: [main]
-
-jobs:
-  python:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-
-      - name: Install uv
-        uses: astral-sh/setup-uv@v3
-        with:
-          version: "0.5.11"
-
-      - name: Install Python 3.11
-        run: uv python install 3.11
-
-      - name: Sync deps
-        run: uv sync
-
-      - name: Lint
-        run: uv run ruff check .
-
-      - name: Type check
-        run: uv run mypy src/patchpilot
-
-      - name: Unit + integration tests
-        run: uv run pytest -q
-
-      - name: Fixture e2e (no live NVD)
-        run: make test-e2e
-
-  docker:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - name: Build all services
-        run: docker compose build
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  python:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v3
+        with:
+          version: "0.5.11"
+
+      - name: Install Python 3.11
+        run: uv python install 3.11
+
+      - name: Sync deps
+        run: uv sync
+
+      - name: Lint
+        run: uv run ruff check .
+
+      - name: Type check
+        run: uv run mypy src/patchpilot
+
+      - name: Unit + integration tests
+        run: uv run pytest -q
+
+      - name: Fixture e2e (no live NVD)
+        run: make test-e2e
+
+  package:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v3
+        with:
+          version: "0.5.11"
+
+      - name: Install Python 3.11
+        run: uv python install 3.11
+
+      - name: Build sdist and wheel
+        run: uv build
+
+      - name: Wheel install smoke
+        run: |
+          uv venv /tmp/wheel-smoke
+          uv pip install --python /tmp/wheel-smoke/bin/python dist/*.whl
+          /tmp/wheel-smoke/bin/python -c "import patchpilot; print('patchpilot', patchpilot.__name__)"
+
+  docker:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Start API service
+        run: docker compose up -d --build api
+
+      - name: Wait for /healthz
+        run: |
+          for i in $(seq 1 60); do
+            if curl -sf http://localhost:8000/healthz; then
+              echo
+              exit 0
+            fi
+            sleep 2
+          done
+          echo "::error::API did not become healthy"
+          docker compose logs api
+          exit 1
+
+      - name: Tear down
+        if: always()
+        run: docker compose down -v

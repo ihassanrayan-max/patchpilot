@@ -1,7 +1,8 @@
 # PatchPilot API service (FastAPI on uvicorn).
 #
-# Phase 0: builds against stub code; serves /healthz and 501 for /score, /rank.
-# Phase 4: real model loaded from the bind-mounted .mlruns directory.
+# Serves /healthz, /readyz, /score, and /rank. Loads a trained model from the
+# bind-mounted .mlruns directory when present; falls back to EPSS-only scoring
+# when silver exists but no model artifact is available.
 
 FROM python:3.11-slim-bookworm AS base
 

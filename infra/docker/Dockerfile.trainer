@@ -1,7 +1,6 @@
 # PatchPilot trainer (one-shot).
 #
-# Phase 0: container starts and exits cleanly with the Phase 2 stub message.
-# Phase 2: runs the deterministic training pipeline and logs to .mlruns.
+# Runs `patchpilot train` against bind-mounted data and writes artifacts to .mlruns.
 
 FROM python:3.11-slim-bookworm AS base
 

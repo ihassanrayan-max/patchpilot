@@ -1,0 +1,28 @@
+# Documentation sample — run manually from the Actions tab.
+# In another repository, reference:
+#   uses: your-org/PatchPilot/.github/actions/rank-sbom@v0.1.0
+name: example-rank-sbom
+
+on:
+  workflow_dispatch:
+    inputs:
+      api_url:
+        description: PatchPilot API base URL
+        required: true
+        default: http://localhost:8000
+
+jobs:
+  rank:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Rank sample SBOM
+        uses: ./.github/actions/rank-sbom
+        with:
+          sbom-path: sample_sbom.json
+          api-url: ${{ inputs.api_url }}
+          output-path: ranked-sample.json
+
+      - name: Show top ranks
+        run: jq '.items[:5]' ranked-sample.json

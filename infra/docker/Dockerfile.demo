@@ -1,6 +1,6 @@
 # PatchPilot Streamlit demo on :8501.
 #
-# Phase 0: serves a placeholder page; Phase 4 wires SBOM upload + /rank.
+# SBOM upload UI wired to the API /rank endpoint (PATCHPILOT_API env).
 
 FROM python:3.11-slim-bookworm AS base
 

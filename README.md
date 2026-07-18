@@ -1,5 +1,8 @@
 # PatchPilot
 
+[![CI](https://github.com/ihassanrayan-max/patchpilot/actions/workflows/ci.yml/badge.svg)](https://github.com/ihassanrayan-max/patchpilot/actions/workflows/ci.yml)
+[![License](https://img.shields.io/badge/License-Apache_2.0-blue.svg)](LICENSE)
+
 PatchPilot is an open-source ML system that predicts which CVEs will be
 exploited within the next 30 days and ranks the vulnerabilities discovered
 in a CycloneDX SBOM by that probability. It is benchmarked head-to-head
