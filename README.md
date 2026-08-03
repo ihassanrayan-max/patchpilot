@@ -40,7 +40,7 @@ flowchart LR
 
 | Model       | AUC-PR | AUC-ROC | P@100 | Brier | ECE |
 | ----------- | ------ | ------- | ----- | ----- | --- |
-| PatchPilot  | 0.017 | 0.808 | 0.010 | 0.003 | 0.000 |
+| PatchPilot  | 0.016 | 0.797 | 0.010 | 0.003 | 0.000 |
 | EPSS        | 0.003 | 0.500 | 0.000 | 0.003 | 0.003 |
 
 Numbers are populated by `make eval` after ingest/train on your silver snapshot.
