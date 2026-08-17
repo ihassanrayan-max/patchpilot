@@ -40,8 +40,8 @@ flowchart LR
 
 | Model       | AUC-PR | AUC-ROC | P@100 | Brier | ECE |
 | ----------- | ------ | ------- | ----- | ----- | --- |
-| PatchPilot  | 0.017 | 0.828 | 0.000 | 0.003 | 0.000 |
-| EPSS        | 0.003 | 0.500 | 0.000 | 0.003 | 0.003 |
+| PatchPilot  | 0.021 | 0.833 | 0.010 | 0.003 | 0.000 |
+| EPSS        | 0.003 | 0.500 | 0.010 | 0.003 | 0.003 |
 
 Numbers are populated by `make eval` after ingest/train on your silver snapshot.
 `n/a` values mean metrics are unavailable — see [`docs/benchmarks/REPORT.md`](docs/benchmarks/REPORT.md) for the reason.
