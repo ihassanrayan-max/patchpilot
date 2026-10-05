@@ -1,12 +1,12 @@
 # PatchPilot vs EPSS - Benchmark Report
 
-_Generated: 2026-09-28T15:46:36.132668+00:00_
+_Generated: 2026-10-05T16:29:50.502420+00:00_
 
 **Status:** ok - metrics computed.
 
-Model artifact: `/home/runner/work/patchpilot/patchpilot/.mlruns/run-1207353079-20260928T154631/model.pkl`  
+Model artifact: `/home/runner/work/patchpilot/patchpilot/.mlruns/run-ed9f24cf00-20261005T162946/model.pkl`  
 Model version: `lgbm@v0.1.0`  
-Trained at: `2026-09-28T15:46:31.855577+00:00`  
+Trained at: `2026-10-05T16:29:46.058307+00:00`  
 Features: 18
 
 ## Dataset windows
@@ -30,11 +30,11 @@ Rows with `published_date > today_utc - 30 days` are excluded because their 30-d
 
 | Model | AUC-PR | AUC-ROC | P@100 | Brier | ECE |
 | ----- | ------ | ------- | ----- | ----- | --- |
-| PatchPilot | 0.0130 | 0.8672 | 0.0100 | 0.0026 | 0.0001 |
+| PatchPilot | 0.0138 | 0.8253 | 0.0000 | 0.0025 | 0.0002 |
 | EPSS | 0.0025 | 0.5000 | 0.0000 | 0.0025 | 0.0025 |
 
 ## Notes
 
 PatchPilot scores come from the latest trained artifact (EPSS-complement: `clamp01(epss + residual)` when the strategy is active); EPSS scores come from the same point-in-time `f_epss_score` feature used at training time (not a live/current lookup), so the comparison is a fair head-to-head. Both models are scored on the same rolling closed-window holdout selected by `select_eval_holdout` (most recent right-censored slice meeting configured minimums). The label is `exploited_30d` per `PLAN.md`. Training excludes this slice; see `heldout_content_sha256` in `.mlruns/<run_id>/metadata.json`.
 
-**Evaluation integrity:** EPSS-complement strategy active: PatchPilot = clamp01(EPSS + residual). Lift over EPSS on this holdout is delta-AUC-PR = +0.0105 (above the EPSS-only baseline).
+**Evaluation integrity:** EPSS-complement strategy active: PatchPilot = clamp01(EPSS + residual). Lift over EPSS on this holdout is delta-AUC-PR = +0.0113 (above the EPSS-only baseline).
